@@ -97,9 +97,7 @@ const DEFAULT_SETTINGS = {
   hiddenLegendItems: [],
   ignoreFolders: [
     ".git",
-    ".obsidian",
-    ".crush",
-    "Assets/Books"
+    ".obsidian"
   ]
 };
 
