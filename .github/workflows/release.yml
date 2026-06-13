@@ -1,0 +1,39 @@
+name: Release Obsidian plugin
+
+on:
+  push:
+    tags:
+      - "*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate release files
+        run: |
+          test -f main.js
+          test -f manifest.json
+          test -f styles.css
+          node -e "JSON.parse(require('fs').readFileSync('manifest.json', 'utf8'))"
+
+      - name: Create draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          manifest_version="$(node -p "require('./manifest.json').version")"
+
+          if [ "$tag" != "$manifest_version" ]; then
+            echo "Tag $tag does not match manifest version $manifest_version"
+            exit 1
+          fi
+
+          gh release create "$tag" \
+            --draft \
+            --title "$tag" \
+            --notes-file CHANGELOG.md \
+            main.js manifest.json styles.css
