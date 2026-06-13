@@ -38,6 +38,11 @@ Then reload Obsidian and enable the plugin.
 
 Mini World Map runs locally in Obsidian. It does not use network services or telemetry.
 
+## Authors
+
+- Miro0o
+- Codex
+
 ## License
 
 MIT
