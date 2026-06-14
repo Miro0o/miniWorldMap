@@ -30,7 +30,7 @@ jobs:
             manifest.json
             styles.css
 
-      - name: Create draft release
+      - name: Create release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
