@@ -1477,6 +1477,15 @@ class MiniWorldMapView extends ItemView {
     this.render();
   }
 
+  resetToVaultRoot() {
+    this.state.rootPath = ROOT_ID;
+    this.state.mode = "atlas";
+    this.state.showCompleteRoot = false;
+    this.viewInitialized = false;
+    this.resetAdaptiveTuning();
+    this.render();
+  }
+
   syncColorSchemeClass() {
     if (!this.contentEl) return;
     const scheme = normalizeColorScheme(this.state.colorScheme);
@@ -1761,15 +1770,6 @@ class MiniWorldMapView extends ItemView {
     this.hoverNodeId = null;
     this.hoverLink = null;
 
-    if (this.state.fullscreen) {
-      const exitButton = this.graphHost.createEl("button", {
-        cls: "mwm-floating-button",
-        attr: { type: "button", "aria-label": "Exit full screen", title: "Exit full screen" }
-      });
-      setIcon(exitButton, "minimize-2");
-      exitButton.addEventListener("click", () => this.toggleFullscreen());
-    }
-
     const canvas = this.graphHost.createEl("canvas", {
       cls: "mwm-canvas",
       attr: {
@@ -1779,6 +1779,7 @@ class MiniWorldMapView extends ItemView {
       }
     });
     this.canvas = canvas;
+    this.renderFloatingCanvasControls();
     this.renderFloatingThemeButton();
     this.canvasPalette = this.readCanvasPalette();
 
@@ -1850,6 +1851,37 @@ class MiniWorldMapView extends ItemView {
       evt.preventDefault();
       evt.stopPropagation();
       this.cycleColorScheme();
+    });
+  }
+
+  renderFloatingCanvasControls() {
+    if (!this.graphHost) return;
+    const controls = this.graphHost.createDiv({ cls: "mwm-floating-controls" });
+
+    const rootButton = controls.createEl("button", {
+      cls: "mwm-floating-button",
+      attr: { type: "button", "aria-label": "Vault root", title: "Vault root" }
+    });
+    setIcon(rootButton, "home");
+    rootButton.addEventListener("click", evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      this.resetToVaultRoot();
+    });
+
+    const fullscreenButton = controls.createEl("button", {
+      cls: "mwm-floating-button",
+      attr: {
+        type: "button",
+        "aria-label": this.state.fullscreen ? "Exit full screen" : "Full screen",
+        title: this.state.fullscreen ? "Exit full screen" : "Full screen"
+      }
+    });
+    setIcon(fullscreenButton, this.state.fullscreen ? "minimize-2" : "maximize-2");
+    fullscreenButton.addEventListener("click", evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      this.toggleFullscreen();
     });
   }
 
@@ -3329,7 +3361,7 @@ class MiniWorldMapView extends ItemView {
       });
     }
 
-    const content = this.sidePanel.createDiv({ cls: "mwm-panel-content" });
+    const content = this.sidePanel.createDiv({ cls: `mwm-panel-content mwm-panel-content-${this.state.sidePage}` });
     this.sidePanelContent = content;
     try {
       if (this.state.sidePage === "view") this.renderViewPage(index, graph);
@@ -3378,12 +3410,7 @@ class MiniWorldMapView extends ItemView {
       this.render();
     }, this.state.mode === "focus");
     this.createPanelAction(modeGrid, "home", "Vault root", () => {
-      this.state.rootPath = ROOT_ID;
-      this.state.mode = "atlas";
-      this.state.showCompleteRoot = false;
-      this.viewInitialized = false;
-      this.resetAdaptiveTuning();
-      this.render();
+      this.resetToVaultRoot();
     });
     const currentRoot = graph?.rootId !== null && graph?.rootId !== undefined
       ? index.nodes.get(graph.rootId)

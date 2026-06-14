@@ -246,6 +246,7 @@
   flex-direction: column;
   background: var(--mwm-panel);
   box-shadow: var(--mwm-shadow-soft);
+  container-type: inline-size;
 }
 
 .mini-world-map-view.is-fullscreen .mwm-toolbar,
@@ -262,9 +263,6 @@
 }
 
 .mwm-floating-button {
-  position: absolute;
-  top: 12px;
-  left: 12px;
   z-index: 5;
   width: 36px;
   height: 36px;
@@ -279,7 +277,18 @@
   box-shadow: var(--mwm-shadow-soft);
 }
 
+.mwm-floating-controls {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 6;
+  display: flex;
+  gap: 8px;
+}
+
 .mwm-theme-button {
+  position: absolute;
+  top: 12px;
   left: auto;
   right: 12px;
 }
@@ -324,7 +333,7 @@
 .mwm-page-tabs {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   gap: 6px;
   padding: 0 12px 12px;
   border-bottom: 1px solid var(--mwm-border);
@@ -409,15 +418,15 @@
 }
 
 .mwm-panel-action-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(124px, 1fr));
 }
 
 .mwm-panel-action-grid-three {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
 }
 
 .mwm-panel-action-row {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(42px, 1fr));
 }
 
 .mwm-panel-action {
@@ -448,6 +457,52 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@container (max-width: 290px) {
+  .mwm-page-tabs {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .mwm-page-tab {
+    justify-content: center;
+    padding: 0 6px;
+  }
+
+  .mwm-page-tab span {
+    display: none;
+  }
+
+  .mwm-panel-action-grid,
+  .mwm-panel-action-grid-three {
+    grid-template-columns: 1fr;
+  }
+}
+
+@container (min-width: 560px) {
+  .mwm-panel-content-view,
+  .mwm-panel-content-controls,
+  .mwm-panel-content-defaults {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    gap: 12px;
+  }
+
+  .mwm-panel-content-view > .mwm-panel-page-title,
+  .mwm-panel-content-view > .mwm-panel-page-desc,
+  .mwm-panel-content-controls > .mwm-panel-page-title,
+  .mwm-panel-content-controls > .mwm-panel-page-desc,
+  .mwm-panel-content-defaults > .mwm-panel-page-title,
+  .mwm-panel-content-defaults > .mwm-panel-page-desc {
+    grid-column: 1 / -1;
+  }
+
+  .mwm-panel-content-view > .mwm-panel-section,
+  .mwm-panel-content-controls > .mwm-panel-section,
+  .mwm-panel-content-defaults > .mwm-panel-section {
+    margin-top: 0;
+  }
 }
 
 .mwm-panel-action:hover,
