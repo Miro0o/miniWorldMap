@@ -155,7 +155,6 @@ class MiniWorldMapPlugin extends Plugin {
 
     this.app.workspace.onLayoutReady(() => {
       this.loadNativeGraphSettings();
-      this.rebuildIndex("startup");
     });
   }
 
@@ -179,11 +178,16 @@ class MiniWorldMapPlugin extends Plugin {
   }
 
   scheduleRebuild(reason) {
+    if (!this.index.ready && !this.hasOpenMapView()) return;
     if (this.rebuildTimer) window.clearTimeout(this.rebuildTimer);
     this.rebuildTimer = window.setTimeout(() => {
       this.rebuildTimer = null;
       this.rebuildIndex(reason);
     }, 900);
+  }
+
+  hasOpenMapView() {
+    return this.app.workspace.getLeavesOfType(VIEW_TYPE_MINI_WORLD_MAP).length > 0;
   }
 
   async rebuildIndex(reason) {
@@ -292,17 +296,12 @@ class WorldMapIndex {
       descendantCount: 0
     });
 
-    const loaded = typeof this.app.vault.getAllLoadedFiles === "function"
-      ? this.app.vault.getAllLoadedFiles()
-      : [];
-    const markdownFiles = typeof this.app.vault.getMarkdownFiles === "function"
-      ? this.app.vault.getMarkdownFiles()
-      : [];
-    this.stats.loadedEntries = loaded.length;
+    const { folders, markdownFiles, totalEntries } = this.collectVaultEntries();
+    this.stats.loadedEntries = totalEntries;
     this.stats.scannedMarkdown = markdownFiles.length;
 
-    for (const entry of loaded) {
-      if (entry instanceof TFolder) this.addFolder(entry);
+    for (const folder of folders) {
+      this.addFolder(folder);
     }
 
     for (const file of markdownFiles) {
@@ -315,6 +314,36 @@ class WorldMapIndex {
     this.buildLinkEdges();
     this.computeStats();
     this.ready = true;
+  }
+
+  collectVaultEntries() {
+    const folders = [];
+    const markdownFiles = [];
+    let totalEntries = 0;
+    const root = typeof this.app.vault.getRoot === "function"
+      ? this.app.vault.getRoot()
+      : null;
+    const stack = root && Array.isArray(root.children)
+      ? root.children.slice()
+      : [];
+
+    while (stack.length) {
+      const entry = stack.pop();
+      totalEntries += 1;
+
+      if (entry instanceof TFolder) {
+        folders.push(entry);
+        if (Array.isArray(entry.children)) {
+          for (let index = entry.children.length - 1; index >= 0; index -= 1) {
+            stack.push(entry.children[index]);
+          }
+        }
+      } else if (entry instanceof TFile && entry.extension === "md") {
+        markdownFiles.push(entry);
+      }
+    }
+
+    return { folders, markdownFiles, totalEntries };
   }
 
   addFolder(folder) {
@@ -1118,6 +1147,7 @@ class MiniWorldMapView extends ItemView {
     this.contentEl.addClass("mini-world-map-view");
     this.syncColorSchemeClass();
     this.renderShell();
+    if (!this.plugin.index.ready) await this.plugin.rebuildIndex("open");
     this.refresh();
   }
 

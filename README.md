@@ -1,6 +1,6 @@
 # Mini World Map
 
-Mini World Map visualizes an Obsidian vault as a hierarchy-first world map with internal links layered on top.
+Mini World Map visualizes your vault as a hierarchy-first world map with internal links layered on top.
 
 ## Features
 

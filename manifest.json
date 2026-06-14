@@ -3,7 +3,7 @@
   "name": "Mini World Map",
   "version": "0.1.1",
   "minAppVersion": "1.5.0",
-  "description": "Visualize an Obsidian vault as a hierarchy-first world map with internal links layered on top.",
+  "description": "Visualize your vault as a hierarchy-first world map with internal links layered on top.",
   "author": "Miro0o and Codex",
   "authorUrl": "https://github.com/Miro0o",
   "isDesktopOnly": false
