@@ -724,7 +724,7 @@ class WorldMapIndex {
   }
 
   aggregateVisibleLinkEdges(visible, state, rootId) {
-    const needsHoverLinks = hoverHighlightsNoteLinks(state.hoverHighlightMode);
+    const needsHoverLinks = hoverHighlightsNoteLinks(state.hoverHighlightMode) || Boolean(state.pinNeedsHoverLinks);
     if (!state.showLinkOverlay && !needsHoverLinks) return {
       linkEdges: [],
       hoverLinkEdges: [],
@@ -1090,6 +1090,14 @@ class MiniWorldMapView extends ItemView {
     this.positions = new Map();
     this.selectedNodeId = null;
     this.selectedLink = null;
+    this.pinnedPaths = [];
+    this.pinGroups = [];
+    this.selectedPinIds = new Set();
+    this.nextPinId = 1;
+    this.nextPinGroupId = 1;
+    this.lastHoverPinCandidate = null;
+    this.lastHoverPinCandidateExpiresAt = 0;
+    this.pinGroupName = "";
     this.lastLayout = null;
     this.renderTimer = null;
     this.activeHighlightElements = new Set();
@@ -1206,6 +1214,7 @@ class MiniWorldMapView extends ItemView {
   sidePanelPages() {
     return [
       ["inspect", "Inspect", "info"],
+      ["pins", "Pins", "pin"],
       ["view", "View", "navigation"],
       ["controls", "Controls", "sliders-horizontal"],
       ["defaults", "Defaults", "settings"]
@@ -1230,6 +1239,7 @@ class MiniWorldMapView extends ItemView {
     this.labelVisibilitySelect = null;
     this.swirlInput = null;
     this.swirlLabel = null;
+    this.pinGroupInput = null;
     this.panelControlRefs = new Map();
   }
 
@@ -1358,6 +1368,273 @@ class MiniWorldMapView extends ItemView {
     return textArea;
   }
 
+  needsCanvasHoverLinks() {
+    return hoverHighlightsNoteLinks(this.state.hoverHighlightMode) || this.pinnedPathsNeedHoverLinks();
+  }
+
+  pinnedPathsNeedHoverLinks() {
+    return this.pinnedPaths.some(pin =>
+      pin.kind === "link" || (pin.kind === "node" && hoverHighlightsNoteLinks(pin.mode))
+    );
+  }
+
+  rememberHoverPinCandidate(index, graph) {
+    const candidate = this.currentHoverPinCandidate(index, graph);
+    if (!candidate) return;
+    this.lastHoverPinCandidate = candidate;
+    this.lastHoverPinCandidateExpiresAt = performance.now() + 15000;
+  }
+
+  currentHoverPinCandidate(index, graph) {
+    if (!index || !graph) return null;
+    if (this.hoverNodeId !== null && this.hoverNodeId !== undefined) {
+      const node = graphNode(index, graph, this.hoverNodeId);
+      return node ? this.createNodePinCandidate(node, this.state.hoverHighlightMode) : null;
+    }
+    if (this.hoverLink) return this.createLinkPinCandidate(index, graph, this.hoverLink);
+    return null;
+  }
+
+  createNodePinCandidate(node, mode) {
+    return {
+      kind: "node",
+      nodeId: node.id,
+      mode: normalizeHoverHighlightMode(mode),
+      title: node.title || node.id || ROOT_TITLE,
+      path: node.path || "/",
+      nodeType: node.type
+    };
+  }
+
+  createLinkPinCandidate(index, graph, edge) {
+    const source = graphNode(index, graph, edge.source);
+    const target = graphNode(index, graph, edge.target);
+    const sourceTitle = source ? source.title : edge.source;
+    const targetTitle = target ? target.title : edge.target;
+    const sourcePath = source ? source.path : edge.source;
+    const targetPath = target ? target.path : edge.target;
+    return {
+      kind: "link",
+      edgeId: edge.id || `${edge.source}->${edge.target}`,
+      source: edge.source,
+      target: edge.target,
+      title: `${sourceTitle} -> ${targetTitle}`,
+      path: `${sourcePath || "/"} -> ${targetPath || "/"}`,
+      mode: "note-links",
+      edge: Object.assign({}, edge)
+    };
+  }
+
+  validatePinCandidate(candidate, index, graph) {
+    if (!candidate) return null;
+    if (candidate.kind === "node") {
+      const node = graphNode(index, graph, candidate.nodeId);
+      return node ? this.createNodePinCandidate(node, candidate.mode) : null;
+    }
+    if (candidate.kind === "link" && candidate.source !== null && candidate.source !== undefined && candidate.target !== null && candidate.target !== undefined) {
+      const edge = this.findGraphEdgeForPin(candidate, graph) || candidate.edge || {
+        id: candidate.edgeId,
+        type: "visible-link",
+        source: candidate.source,
+        target: candidate.target,
+        weight: 1
+      };
+      return this.createLinkPinCandidate(index, graph, edge);
+    }
+    return null;
+  }
+
+  pinCandidateKey(candidate) {
+    if (!candidate) return "";
+    if (candidate.kind === "node") return `node:${candidate.nodeId}:${normalizeHoverHighlightMode(candidate.mode)}`;
+    return `link:${candidate.edgeId || `${candidate.source}->${candidate.target}`}`;
+  }
+
+  addPinnedPath(candidate) {
+    const key = this.pinCandidateKey(candidate);
+    if (!key) return null;
+    const existing = this.pinnedPaths.find(pin => pin.key === key);
+    if (existing) {
+      this.selectedPinIds.add(existing.id);
+      new Notice("That path is already pinned.");
+      return existing;
+    }
+
+    const pin = Object.assign({}, candidate, {
+      id: `pin-${this.nextPinId++}`,
+      key,
+      groupId: null,
+      createdAt: Date.now()
+    });
+    this.pinnedPaths.push(pin);
+    this.selectedPinIds.add(pin.id);
+    return pin;
+  }
+
+  pinCurrentHoverPath() {
+    const { index, graph } = this.lastCanvasBundle || {};
+    if (!index || !graph) return;
+    const freshCandidate = this.currentHoverPinCandidate(index, graph);
+    const cachedCandidate = performance.now() <= this.lastHoverPinCandidateExpiresAt
+      ? this.validatePinCandidate(this.lastHoverPinCandidate, index, graph)
+      : null;
+    const pin = this.addPinnedPath(freshCandidate || cachedCandidate);
+    if (!pin) {
+      new Notice("Hover a path before pinning.");
+      return;
+    }
+    this.state.sidePage = "pins";
+    this.render();
+  }
+
+  removePinnedPath(pinId) {
+    this.pinnedPaths = this.pinnedPaths.filter(pin => pin.id !== pinId);
+    this.selectedPinIds.delete(pinId);
+    this.dropEmptyPinGroups();
+    this.render();
+  }
+
+  clearPinnedPaths() {
+    this.pinnedPaths = [];
+    this.pinGroups = [];
+    this.selectedPinIds.clear();
+    this.render();
+  }
+
+  groupSelectedPinnedPaths() {
+    const selectedPins = this.pinnedPaths.filter(pin => this.selectedPinIds.has(pin.id));
+    if (!selectedPins.length) {
+      new Notice("Select pinned paths to group.");
+      return;
+    }
+
+    const groupId = `pin-group-${this.nextPinGroupId++}`;
+    const name = this.pinGroupName.trim() || `Group ${this.pinGroups.length + 1}`;
+    this.pinGroups.push({ id: groupId, name });
+    for (const pin of selectedPins) pin.groupId = groupId;
+    this.dropEmptyPinGroups();
+    this.pinGroupName = "";
+    this.selectedPinIds.clear();
+
+    if (!this.state.fullscreen && this.lastCanvasBundle) {
+      this.renderSidePanel(this.lastCanvasBundle.index, this.lastCanvasBundle.graph);
+    }
+  }
+
+  removePinGroup(groupId) {
+    this.pinGroups = this.pinGroups.filter(group => group.id !== groupId);
+    for (const pin of this.pinnedPaths) {
+      if (pin.groupId === groupId) pin.groupId = null;
+    }
+    if (!this.state.fullscreen && this.lastCanvasBundle) {
+      this.renderSidePanel(this.lastCanvasBundle.index, this.lastCanvasBundle.graph);
+    }
+  }
+
+  ungroupPinnedPath(pinId) {
+    const pin = this.pinnedPaths.find(item => item.id === pinId);
+    if (!pin) return;
+    pin.groupId = null;
+    this.dropEmptyPinGroups();
+    if (!this.state.fullscreen && this.lastCanvasBundle) {
+      this.renderSidePanel(this.lastCanvasBundle.index, this.lastCanvasBundle.graph);
+    }
+  }
+
+  dropEmptyPinGroups() {
+    const usedGroups = new Set(this.pinnedPaths.map(pin => pin.groupId).filter(Boolean));
+    this.pinGroups = this.pinGroups.filter(group => usedGroups.has(group.id));
+  }
+
+  findGraphEdgeForPin(pin, graph) {
+    if (!pin || pin.kind !== "link" || !graph) return null;
+    const edges = [
+      ...(graph.linkEdges || []),
+      ...(graph.hoverLinkEdges || [])
+    ];
+    return edges.find(edge =>
+      (pin.edgeId && edge.id === pin.edgeId)
+      || (edge.source === pin.source && edge.target === pin.target)
+    ) || null;
+  }
+
+  findCanvasEdgeForPin(pin) {
+    if (!pin || pin.kind !== "link" || !this.canvasData) return null;
+    if (pin.edgeId && this.canvasData.edgesById.has(pin.edgeId)) {
+      return this.canvasData.edgesById.get(pin.edgeId);
+    }
+    const collections = [
+      ...(this.canvasData.links || []),
+      ...(this.canvasData.hoverLinks || []),
+      ...(this.canvasData.hierarchy || [])
+    ];
+    return collections.find(item =>
+      item && item.source === pin.source && item.target === pin.target
+    ) || null;
+  }
+
+  centerPinnedPath(pin) {
+    if (!pin || !this.canvas || !this.canvasData) return;
+    if (pin.kind === "node") {
+      const nodeId = this.plugin.index.visualNodeId(pin.nodeId);
+      const item = this.canvasData.nodesById.get(nodeId);
+      if (item) this.centerCanvasOnPoint(item.point);
+      return;
+    }
+
+    const edge = this.findCanvasEdgeForPin(pin);
+    if (!edge || !edge.sourcePoint || !edge.targetPoint) return;
+    this.centerCanvasOnPoint({
+      x: (edge.sourcePoint.x + edge.targetPoint.x) / 2,
+      y: (edge.sourcePoint.y + edge.targetPoint.y) / 2
+    });
+  }
+
+  centerCanvasOnPoint(point) {
+    if (!point || !this.canvas) return;
+    const viewport = this.canvasViewport();
+    const zoom = clampFloat(this.state.zoom, this.canvasMinZoom(viewport), this.canvasMaxZoom(viewport), 1);
+    this.canvasPanX = viewport.width / 2 - point.x * zoom;
+    this.canvasPanY = viewport.height / 2 - point.y * zoom;
+    this.saveViewportState();
+    this.requestCanvasDraw("full");
+  }
+
+  inspectPinnedPath(pin, index, graph) {
+    if (!pin) return;
+    if (pin.kind === "node") {
+      this.state.sidePage = "inspect";
+      this.selectedNodeId = this.plugin.index.visualNodeId(pin.nodeId);
+      this.selectedLink = null;
+      this.applyPersistentHighlight();
+      if (!this.state.fullscreen) this.renderSidePanel(index, graph, this.selectedNodeId);
+      return;
+    }
+
+    this.state.sidePage = "inspect";
+    this.selectedLink = this.findGraphEdgeForPin(pin, graph) || pin.edge || null;
+    this.selectedNodeId = null;
+    this.applyPersistentHighlight();
+    if (!this.state.fullscreen) this.renderSidePanel(index, graph);
+  }
+
+  pinnedCanvasLabelIds() {
+    if (!this.canvasData) return [];
+    const ids = new Set();
+    for (const pin of this.pinnedPaths) {
+      if (pin.kind === "node") {
+        const nodeId = this.plugin.index.visualNodeId(pin.nodeId);
+        if (this.canvasData.nodesById.has(nodeId)) ids.add(nodeId);
+        continue;
+      }
+      const edge = this.findCanvasEdgeForPin(pin);
+      if (!edge) continue;
+      if (edge.source !== null && edge.source !== undefined && this.canvasData.nodesById.has(edge.source)) ids.add(edge.source);
+      if (edge.target !== null && edge.target !== undefined && this.canvasData.nodesById.has(edge.target)) ids.add(edge.target);
+    }
+    return Array.from(ids);
+  }
+
   render() {
     this.syncColorSchemeClass();
     const index = this.plugin.index;
@@ -1397,7 +1674,8 @@ class MiniWorldMapView extends ItemView {
     const started = performance.now();
     const graphState = Object.assign({}, this.state, {
       selectedNodeId: this.selectedNodeId,
-      selectedLink: this.selectedLink
+      selectedLink: this.selectedLink,
+      pinNeedsHoverLinks: this.pinnedPathsNeedHoverLinks()
     });
     const graph = index.buildVisibleGraph(graphState);
     if (this.applyPreLayoutPressureGuard(graph)) return;
@@ -1790,7 +2068,7 @@ class MiniWorldMapView extends ItemView {
       layout,
       query,
       this.plugin.nativeGraphSettings || DEFAULT_NATIVE_GRAPH_SETTINGS,
-      { includeHoverLinks: hoverHighlightsNoteLinks(this.state.hoverHighlightMode) }
+      { includeHoverLinks: this.needsCanvasHoverLinks() }
     );
     this.lastCanvasBundle = { index, graph, layout };
 
@@ -1867,6 +2145,17 @@ class MiniWorldMapView extends ItemView {
       evt.preventDefault();
       evt.stopPropagation();
       this.resetToVaultRoot();
+    });
+
+    const pinButton = controls.createEl("button", {
+      cls: "mwm-floating-button",
+      attr: { type: "button", "aria-label": "Pin hover", title: "Pin hover" }
+    });
+    setIcon(pinButton, "pin");
+    pinButton.addEventListener("click", evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      this.pinCurrentHoverPath();
     });
 
     const fullscreenButton = controls.createEl("button", {
@@ -2027,6 +2316,7 @@ class MiniWorldMapView extends ItemView {
         canvas.setPointerCapture?.(evt.pointerId);
         this.hoverNodeId = hit.node.node.id;
         this.hoverLink = null;
+        this.rememberHoverPinCandidate(this.lastCanvasBundle?.index, this.lastCanvasBundle?.graph);
         this.graphHost.classList.add("is-panning", "is-pointing");
         this.requestCanvasDraw("interactive");
         return;
@@ -2380,6 +2670,10 @@ class MiniWorldMapView extends ItemView {
     this.hoverLink = hasNodeHover ? null : nextLink;
     this.graphHost.classList.toggle("is-hovering", hasNodeHover || Boolean(this.hoverLink));
     this.graphHost.classList.toggle("is-pointing", hasNodeHover || Boolean(this.hoverLink));
+    if (hasNodeHover || this.hoverLink) {
+      const { index, graph } = this.lastCanvasBundle || {};
+      this.rememberHoverPinCandidate(index, graph);
+    }
     if (this.canvasNeedsFastDraw()) {
       this.requestCanvasDraw("interactive");
       this.scheduleSettledCanvasDraw(180);
@@ -2672,28 +2966,68 @@ class MiniWorldMapView extends ItemView {
     const relatedNodes = new Set();
     const highlightedEdges = new Set();
     const labelNodes = new Set();
+    const pinnedNodeIds = new Set();
+    let hasPinnedActive = false;
+    let hasActiveLink = false;
 
-    if (activeNodeId !== null && activeNodeId !== undefined) {
-      relatedNodes.add(activeNodeId);
-      labelNodes.add(activeNodeId);
-      if (hoverHighlightsNoteLinks(hoverMode)) {
-        for (const edge of data.linkEdgesByNode.get(activeNodeId) || []) {
+    const addNodeHighlight = (nodeId, mode, pinned = false) => {
+      let visualNodeId = this.plugin.index.visualNodeId(nodeId);
+      if (visualNodeId !== null && visualNodeId !== undefined && !data.nodesById.has(visualNodeId)) visualNodeId = null;
+      if (visualNodeId === null || visualNodeId === undefined) return null;
+      relatedNodes.add(visualNodeId);
+      labelNodes.add(visualNodeId);
+      if (pinned) pinnedNodeIds.add(visualNodeId);
+      if (hoverHighlightsNoteLinks(mode)) {
+        for (const edge of data.linkEdgesByNode.get(visualNodeId) || []) {
           highlightedEdges.add(edge.key);
           if (edge.source !== null && edge.source !== undefined) relatedNodes.add(edge.source);
           if (edge.target !== null && edge.target !== undefined) relatedNodes.add(edge.target);
+          if (edge.source !== null && edge.source !== undefined) labelNodes.add(edge.source);
+          if (edge.target !== null && edge.target !== undefined) labelNodes.add(edge.target);
         }
       }
-      addHierarchyHoverHighlights(data, activeNodeId, hoverMode, relatedNodes, highlightedEdges, labelNodes);
+      addHierarchyHoverHighlights(data, visualNodeId, mode, relatedNodes, highlightedEdges, labelNodes);
+      return visualNodeId;
+    };
+
+    const addLinkHighlight = (edgeId, fallbackEdge) => {
+      let edge = edgeId ? data.edgesById.get(edgeId) : null;
+      if (!edge && fallbackEdge) {
+        edge = this.findCanvasEdgeForPin({
+          kind: "link",
+          edgeId: fallbackEdge.id,
+          source: fallbackEdge.source,
+          target: fallbackEdge.target
+        });
+      }
+      if (!edge) return null;
+      highlightedEdges.add(edge.key);
+      if (edge.source !== null && edge.source !== undefined) {
+        relatedNodes.add(edge.source);
+        labelNodes.add(edge.source);
+        pinnedNodeIds.add(edge.source);
+      }
+      if (edge.target !== null && edge.target !== undefined) {
+        relatedNodes.add(edge.target);
+        labelNodes.add(edge.target);
+        pinnedNodeIds.add(edge.target);
+      }
+      return edge.key;
+    };
+
+    if (activeNodeId !== null && activeNodeId !== undefined) {
+      addNodeHighlight(activeNodeId, hoverMode, false);
     }
 
-    if (activeLinkId) {
-      const edge = data.edgesById.get(activeLinkId);
-      if (edge) {
-        highlightedEdges.add(edge.key);
-        relatedNodes.add(edge.source);
-        relatedNodes.add(edge.target);
-        labelNodes.add(edge.source);
-        labelNodes.add(edge.target);
+    if (activeLinkId || this.hoverLink || this.selectedLink) {
+      hasActiveLink = addLinkHighlight(activeLinkId, this.hoverLink || this.selectedLink) !== null;
+    }
+
+    for (const pin of this.pinnedPaths) {
+      if (pin.kind === "node") {
+        if (addNodeHighlight(pin.nodeId, pin.mode, true) !== null) hasPinnedActive = true;
+      } else if (pin.kind === "link") {
+        if (addLinkHighlight(pin.edgeId, pin.edge || pin) !== null) hasPinnedActive = true;
       }
     }
 
@@ -2702,12 +3036,13 @@ class MiniWorldMapView extends ItemView {
     }
 
     return {
-      hasActive: activeNodeId !== null && activeNodeId !== undefined || Boolean(activeLinkId),
+      hasActive: activeNodeId !== null && activeNodeId !== undefined || hasActiveLink || hasPinnedActive,
       activeNodeId,
       activeLinkId,
       relatedNodes,
       highlightedEdges,
-      labelNodes
+      labelNodes,
+      pinnedNodeIds
     };
   }
 
@@ -2737,11 +3072,13 @@ class MiniWorldMapView extends ItemView {
       currentNodeIds.add(nodeId);
       const isFocused = nodeId === active.activeNodeId
         || nodeId === this.selectedNodeId
+        || active.pinnedNodeIds.has(nodeId)
         || nodeId === this.lastCanvasBundle.graph.focusId
         || item.searchMatch;
       const isRelated = active.relatedNodes.has(nodeId);
       const directLabel = nodeId === active.activeNodeId
         || nodeId === this.selectedNodeId
+        || active.pinnedNodeIds.has(nodeId)
         || item.searchMatch;
       const explicitLabel = directLabel || (!hoverOnlyLabels && active.labelNodes.has(nodeId));
       const target = {
@@ -3105,7 +3442,7 @@ class MiniWorldMapView extends ItemView {
       ? (this.canvasData?.interactiveLabelItems || nodes)
       : (this.canvasData?.labelItems || nodes);
     if (interactive) {
-      const extraIds = [this.selectedNodeId, this.hoverNodeId, this.lastCanvasBundle?.graph?.focusId]
+      const extraIds = [this.selectedNodeId, this.hoverNodeId, this.lastCanvasBundle?.graph?.focusId, ...this.pinnedCanvasLabelIds()]
         .filter(id => id !== null && id !== undefined);
       if (extraIds.length) {
         const seen = new Set(labelItems.map(item => item.node.id));
@@ -3116,9 +3453,17 @@ class MiniWorldMapView extends ItemView {
       }
     }
 
+    const pinnedLabelIds = new Set(this.pinnedCanvasLabelIds());
     for (const item of labelItems) {
       if (bounds && !circleInBounds(item.point, item.radius + 180 / zoom, bounds)) continue;
-      if (interactive && !item.searchMatch && item.labelRank > FAST_CANVAS_LABEL_LIMIT && item.node.id !== this.selectedNodeId && item.node.id !== this.hoverNodeId) continue;
+      if (
+        interactive
+        && !item.searchMatch
+        && item.labelRank > FAST_CANVAS_LABEL_LIMIT
+        && item.node.id !== this.selectedNodeId
+        && item.node.id !== this.hoverNodeId
+        && !pinnedLabelIds.has(item.node.id)
+      ) continue;
       const visual = visuals.nodes.get(item.node.id) || { label: 0, focus: 0 };
       if (visual.label <= 0.02) continue;
       if (fastInteractive && visual.focus <= 0.02 && !item.searchMatch && item.labelRank > 36) continue;
@@ -3365,6 +3710,7 @@ class MiniWorldMapView extends ItemView {
     this.sidePanelContent = content;
     try {
       if (this.state.sidePage === "view") this.renderViewPage(index, graph);
+      else if (this.state.sidePage === "pins") this.renderPinsPage(index, graph);
       else if (this.state.sidePage === "controls") this.renderControlsPage(index, graph);
       else if (this.state.sidePage === "defaults") this.renderDefaultsPage(index, graph);
       else this.renderInspectPage(index, graph, forcedNodeId);
@@ -3457,6 +3803,105 @@ class MiniWorldMapView extends ItemView {
       this.plugin.rebuildIndex("manual");
     });
     this.createPanelAction(commandGrid, "maximize-2", "Full screen", () => this.toggleFullscreen(), this.state.fullscreen);
+  }
+
+  renderPinsPage(index, graph) {
+    const panel = this.getSidePanelTarget();
+    this.createPanelPageTitle(panel, "Pins");
+
+    const actions = this.createPanelSection(panel, "Actions");
+    const actionGrid = actions.createDiv({ cls: "mwm-panel-action-grid" });
+    this.createPanelAction(actionGrid, "pin", "Pin hover", () => this.pinCurrentHoverPath());
+    const clearButton = this.createPanelAction(actionGrid, "trash-2", "Clear pins", () => this.clearPinnedPaths());
+    clearButton.disabled = this.pinnedPaths.length === 0;
+
+    const grouping = this.createPanelSection(panel, "Group");
+    this.pinGroupInput = this.createPanelText(
+      grouping,
+      "pin-group-name",
+      "Name",
+      this.pinGroupName,
+      "Group name",
+      value => {
+        this.pinGroupName = value;
+      }
+    );
+    const groupGrid = grouping.createDiv({ cls: "mwm-panel-action-grid" });
+    const groupButton = this.createPanelAction(groupGrid, "folder-plus", "Group selected", () => this.groupSelectedPinnedPaths());
+    groupButton.disabled = this.selectedPinIds.size === 0;
+
+    const listSection = this.createPanelSection(panel, `Pinned Paths (${this.pinnedPaths.length})`);
+    if (!this.pinnedPaths.length) {
+      listSection.createDiv({ cls: "mwm-side-muted", text: "No pinned paths." });
+      return;
+    }
+
+    const groupsById = new Map(this.pinGroups.map(group => [group.id, group]));
+    const pinsByGroup = new Map();
+    const ungrouped = [];
+    for (const pin of this.pinnedPaths) {
+      if (!pin.groupId || !groupsById.has(pin.groupId)) {
+        ungrouped.push(pin);
+        continue;
+      }
+      if (!pinsByGroup.has(pin.groupId)) pinsByGroup.set(pin.groupId, []);
+      pinsByGroup.get(pin.groupId).push(pin);
+    }
+
+    if (ungrouped.length) {
+      this.renderPinnedPathGroup(listSection, index, graph, null, ungrouped);
+    }
+    for (const group of this.pinGroups) {
+      const pins = pinsByGroup.get(group.id) || [];
+      if (pins.length) this.renderPinnedPathGroup(listSection, index, graph, group, pins);
+    }
+  }
+
+  renderPinnedPathGroup(parent, index, graph, group, pins) {
+    const wrapper = parent.createDiv({ cls: "mwm-pin-group" });
+    const header = wrapper.createDiv({ cls: "mwm-pin-group-header" });
+    const title = header.createDiv({ cls: "mwm-pin-group-title" });
+    title.createSpan({ text: group ? group.name : "Ungrouped" });
+    title.createSpan({ cls: "mwm-pin-count", text: String(pins.length) });
+    if (group) {
+      this.createIconButton(header, "folder-minus", "Ungroup all", () => this.removePinGroup(group.id), "mwm-pin-icon-button");
+    }
+
+    const list = wrapper.createDiv({ cls: "mwm-pin-list" });
+    for (const pin of pins) {
+      this.renderPinnedPathItem(list, index, graph, pin);
+    }
+  }
+
+  renderPinnedPathItem(parent, index, graph, pin) {
+    const row = parent.createDiv({ cls: "mwm-pin-row" });
+    const checkbox = row.createEl("input", {
+      cls: "mwm-pin-check",
+      attr: { type: "checkbox", title: "Select for grouping", "aria-label": "Select for grouping" }
+    });
+    checkbox.checked = this.selectedPinIds.has(pin.id);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) this.selectedPinIds.add(pin.id);
+      else this.selectedPinIds.delete(pin.id);
+      this.renderSidePanel(index, graph);
+    });
+
+    const main = row.createEl("button", {
+      cls: "mwm-pin-main",
+      attr: { type: "button", title: pin.path || pin.title }
+    });
+    main.addEventListener("click", () => this.centerPinnedPath(pin));
+    main.createDiv({ cls: "mwm-pin-title", text: pin.title || "Pinned path" });
+    const kind = pin.kind === "link" ? "link" : hoverHighlightModeLabel(pin.mode);
+    main.createDiv({ cls: "mwm-pin-meta", text: `${kind} - ${pin.path || "/"}` });
+
+    const actions = row.createDiv({ cls: "mwm-pin-actions" });
+    this.createIconButton(actions, "locate-fixed", "Locate", () => this.centerPinnedPath(pin), "mwm-pin-icon-button");
+    this.createIconButton(actions, "info", "Inspect", () => this.inspectPinnedPath(pin, index, graph), "mwm-pin-icon-button");
+    if (pin.groupId) {
+      this.createIconButton(actions, "folder-minus", "Ungroup", () => this.ungroupPinnedPath(pin.id), "mwm-pin-icon-button");
+    }
+    this.createIconButton(actions, "x", "Remove", () => this.removePinnedPath(pin.id), "mwm-pin-icon-button");
   }
 
   renderControlsPage(index, graph) {
@@ -3920,6 +4365,12 @@ class MiniWorldMapView extends ItemView {
     }
 
     const actions = panel.createDiv({ cls: "mwm-side-actions" });
+    this.createIconButton(actions, "pin", "Pin highlighted path", () => {
+      const pin = this.addPinnedPath(this.createNodePinCandidate(node, this.state.hoverHighlightMode));
+      if (!pin) return;
+      this.state.sidePage = "pins";
+      this.render();
+    }, "");
     if (node.type === "note") {
       this.createIconButton(actions, "file-text", "Open note", () => this.openNode(node.id), "");
       this.createIconButton(actions, "locate-fixed", "Focus note", () => {
@@ -3996,6 +4447,12 @@ class MiniWorldMapView extends ItemView {
     }
 
     const actions = panel.createDiv({ cls: "mwm-side-actions" });
+    this.createIconButton(actions, "pin", "Pin link", () => {
+      const pin = this.addPinnedPath(this.createLinkPinCandidate(index, graph, edge));
+      if (!pin) return;
+      this.state.sidePage = "pins";
+      this.render();
+    }, "");
     if (source) {
       const button = actions.createEl("button", { cls: "mwm-text-button", attr: { type: "button" } });
       button.textContent = "Source";

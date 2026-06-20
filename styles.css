@@ -461,7 +461,7 @@
 
 @container (max-width: 290px) {
   .mwm-page-tabs {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   .mwm-page-tab {
@@ -509,6 +509,12 @@
 .mwm-panel-action.is-active {
   background: var(--mwm-panel-alt);
   border-color: color-mix(in srgb, var(--text-accent) 58%, var(--mwm-border));
+}
+
+.mwm-panel-action:disabled,
+.mwm-icon-button:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
 }
 
 .mwm-panel-field {
@@ -643,6 +649,115 @@
 
 .mwm-text-button:hover {
   background: var(--mwm-panel-alt);
+}
+
+.mwm-pin-group {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--mwm-border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--mwm-bg) 72%, var(--mwm-panel));
+}
+
+.mwm-pin-group + .mwm-pin-group {
+  margin-top: 8px;
+}
+
+.mwm-pin-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mwm-pin-group-title {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--mwm-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mwm-pin-count {
+  min-width: 20px;
+  padding: 1px 6px;
+  border: 1px solid var(--mwm-border);
+  border-radius: 999px;
+  color: var(--mwm-muted);
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+}
+
+.mwm-pin-list {
+  display: grid;
+  gap: 6px;
+}
+
+.mwm-pin-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+}
+
+.mwm-pin-check {
+  margin: 0;
+}
+
+.mwm-pin-main {
+  min-width: 0;
+  min-height: 38px;
+  display: grid;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--mwm-border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--mwm-bg) 78%, var(--mwm-panel));
+  color: var(--mwm-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mwm-pin-main:hover {
+  background: var(--mwm-panel-alt);
+}
+
+.mwm-pin-title,
+.mwm-pin-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mwm-pin-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mwm-pin-meta {
+  color: var(--mwm-muted);
+  font-size: 11px;
+}
+
+.mwm-pin-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mwm-pin-icon-button {
+  width: 28px;
+  height: 28px;
+}
+
+.mwm-pin-icon-button svg {
+  width: 14px;
+  height: 14px;
 }
 
 .mwm-edge-list {
