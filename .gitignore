@@ -2,3 +2,6 @@
 node_modules/
 data.json
 *.map
+dist/
+dev-vault/
+*.log

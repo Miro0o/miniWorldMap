@@ -1,6 +1,9 @@
 # Mini World Map
 
-Mini World Map is an Obsidian plugin that visualizes your vault as a hierarchy-first world map, with Obsidian note links layered on top.
+Mini World Map is an Obsidian plugin that visualizes your vault as a hierarchy-first world map, with Obsidian note links layered on top. It now has two rendering modes:
+
+- **2D radial rings:** the default hierarchy-first Mini World Map view.
+- **3D map:** a Galaxy-derived Three.js map for flying through the vault link graph.
 
 It is designed for people who use folders as meaningful topic structure and links as cross-topic associations. The map helps you see both at once: where a note lives in the vault hierarchy, and which other notes or topics it connects to.
 
@@ -18,6 +21,7 @@ The goal is to complement Obsidian's native Graph View and conventional mind-map
 
 ## Features
 
+- **Two render modes:** switch between 2D radial rings and a 3D map from the view panel.
 - **Atlas view:** browse folders and notes as a radial world map rooted at the whole vault or at any folder.
 - **Focus view:** center the map around the active note and show its ancestors, siblings, outgoing links, and backlinks.
 - **Concentric hierarchy rings:** render parent folders closer to the center and child folders or notes farther outward.
@@ -32,8 +36,21 @@ The goal is to complement Obsidian's native Graph View and conventional mind-map
 - **Canvas controls:** pan, zoom, drag nodes temporarily, reset the view, and switch between bounded and complete root detail.
 - **Adaptive detail:** automatically adjusts depth, node budget, and link budget when the map is large.
 - **Display controls:** configure atlas depth, node limit, link limit, outside-link detail, label visibility, spin speed, color scheme, and ignored folders.
-- **Appearance modes:** follow Obsidian automatically, or force Mini World Map's Day or Night palette.
+- **Appearance modes:** follow Obsidian/system by default, or force Mini World Map's Light or Night palette.
+- **Panel language:** use English by default, with Chinese available for both 2D and 3D panels.
 - **Local-only indexing:** builds the map from your local vault metadata without network services or telemetry.
+
+## Development
+
+Mini World Map is now built from TypeScript source.
+
+```bash
+npm install
+npm test
+npm run build
+```
+
+`npm run build` validates TypeScript and writes release assets. The checked-in `main.js` is the generated bundle; the previous legacy bundle is preserved at `legacy/main.legacy.js`.
 
 ## Usage
 
@@ -54,7 +71,9 @@ Useful interactions:
 
 Mini World Map includes settings for:
 
-- Color scheme: Auto, Day, or Night.
+- Language: English or Chinese.
+- Color scheme: System, Light, or Night.
+- Default render mode: 2D radial rings or 3D map.
 - Default atlas depth.
 - Default link overlay limit.
 - Default render node limit.
