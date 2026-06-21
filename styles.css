@@ -37,24 +37,24 @@
 .theme-dark .mini-world-map-view.is-day-scheme,
 .mini-world-map-view.is-day-scheme {
   --mwm-graph-bg: #f7f8fb;
-  --mwm-graph-line: rgba(107, 114, 128, 0.28);
-  --mwm-node: #6f7785;
-  --mwm-node-focused: #2563eb;
-  --mwm-folder: #4b5563;
-  --mwm-folder-meta: #4f46e5;
-  --mwm-folder-ring: #64748b;
-  --mwm-tree: rgba(100, 116, 139, 0.46);
+  --mwm-graph-line: rgba(91, 103, 122, 0.34);
+  --mwm-node: #596575;
+  --mwm-node-focused: #4f5ee8;
+  --mwm-folder: #3f4a5a;
+  --mwm-folder-meta: #4f5ee8;
+  --mwm-folder-ring: #647086;
+  --mwm-tree: rgba(91, 103, 122, 0.5);
   --mwm-ring-guide: rgba(148, 163, 184, 0.15);
-  --mwm-note: #747b87;
-  --mwm-file-ring: rgba(75, 85, 99, 0.32);
-  --mwm-link: rgba(59, 130, 246, 0.34);
-  --mwm-link-highlight: #1d4ed8;
-  --mwm-external: #8b5cf6;
-  --mwm-external-link: rgba(217, 119, 6, 0.62);
+  --mwm-note: #536073;
+  --mwm-file-ring: rgba(64, 76, 94, 0.36);
+  --mwm-link: rgba(82, 94, 112, 0.42);
+  --mwm-link-highlight: #5368ee;
+  --mwm-external: #5b5fe0;
+  --mwm-external-link: rgba(203, 118, 34, 0.58);
   --mwm-unresolved: #dc2626;
   --mwm-node-stroke: rgba(247, 248, 251, 0.9);
-  --mwm-node-glow: rgba(37, 99, 235, 0.28);
-  --mwm-label-text: #111827;
+  --mwm-node-glow: rgba(79, 94, 232, 0.24);
+  --mwm-label-text: #1f2937;
   --mwm-label-stroke: rgba(247, 248, 251, 0.96);
 }
 
@@ -62,8 +62,8 @@
 .theme-light .mini-world-map-view.is-night-scheme,
 .mini-world-map-view.is-night-scheme {
   --mwm-graph-bg: #0f1117;
-  --mwm-graph-line: rgba(156, 163, 175, 0.25);
-  --mwm-node: #98a2b3;
+  --mwm-graph-line: rgba(156, 163, 175, 0.3);
+  --mwm-node: #9aa4b6;
   --mwm-node-focused: #7c9cff;
   --mwm-folder: #d7dae2;
   --mwm-folder-meta: #f59e0b;
@@ -72,13 +72,13 @@
   --mwm-ring-guide: rgba(129, 140, 248, 0.13);
   --mwm-note: #a1a8b5;
   --mwm-file-ring: rgba(124, 156, 255, 0.34);
-  --mwm-link: rgba(56, 189, 248, 0.38);
-  --mwm-link-highlight: #a5b4fc;
-  --mwm-external: #f472b6;
-  --mwm-external-link: rgba(251, 146, 60, 0.72);
+  --mwm-link: rgba(148, 163, 184, 0.38);
+  --mwm-link-highlight: #aab6ff;
+  --mwm-external: #c4b5fd;
+  --mwm-external-link: rgba(251, 146, 60, 0.66);
   --mwm-unresolved: #fb7185;
   --mwm-node-stroke: rgba(15, 17, 23, 0.9);
-  --mwm-node-glow: rgba(124, 156, 255, 0.34);
+  --mwm-node-glow: rgba(124, 156, 255, 0.3);
   --mwm-label-text: #f8fafc;
   --mwm-label-stroke: rgba(15, 17, 23, 0.96);
 }

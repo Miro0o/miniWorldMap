@@ -22,7 +22,8 @@ const DEFAULT_MIN_CANVAS_ZOOM = 0.04;
 const MAX_CANVAS_ZOOM = 2;
 const ZOOM_SLIDER_STEPS = 1000;
 const ZOOM_SLIDER_CURVE = 1.35;
-const ZOOM_WHEEL_STEP = 1.045;
+const ZOOM_WHEEL_BASE = 1.5;
+const ZOOM_ANIMATION_FRICTION = 0.85;
 const ZOOM_BUTTON_STEP = 1.14;
 const COLOR_SCHEME_OPTIONS = ["auto", "day", "night"];
 const LABEL_VISIBILITY_OPTIONS = [
@@ -112,6 +113,1090 @@ const DEFAULT_NATIVE_GRAPH_SETTINGS = {
   scale: 1
 };
 
+const OBSIDIAN_PIXI_ASSET_PATH = "lib/pixi.min.js";
+let miniWorldMapPixiRuntime = null;
+let miniWorldMapAsarCandidatesCache = null;
+
+function miniWorldMapNodeRequire(moduleName) {
+  try {
+    return require(moduleName);
+  } catch (error) {
+    return null;
+  }
+}
+
+function miniWorldMapAsarCandidates() {
+  if (miniWorldMapAsarCandidatesCache) return miniWorldMapAsarCandidatesCache;
+  const fs = miniWorldMapNodeRequire("fs");
+  const path = miniWorldMapNodeRequire("path");
+  const os = miniWorldMapNodeRequire("os");
+  const processRef = typeof process !== "undefined" ? process : null;
+  if (!fs || !path) {
+    miniWorldMapAsarCandidatesCache = [];
+    return miniWorldMapAsarCandidatesCache;
+  }
+
+  const candidates = [];
+  const add = filePath => {
+    if (!filePath || candidates.includes(filePath)) return;
+    try {
+      if (fs.existsSync(filePath)) candidates.push(filePath);
+    } catch (error) {
+      // Ignore unreadable install locations; another candidate may work.
+    }
+  };
+  const addVersioned = directory => {
+    if (!directory) return;
+    try {
+      const files = fs.readdirSync(directory)
+        .filter(file => /^obsidian-.+\.asar$/i.test(file))
+        .map(file => {
+          const filePath = path.join(directory, file);
+          let mtime = 0;
+          try {
+            mtime = fs.statSync(filePath).mtimeMs;
+          } catch (error) {
+            // Keep a neutral sort value if stat is unavailable.
+          }
+          return { filePath, mtime };
+        })
+        .sort((a, b) => b.mtime - a.mtime);
+      for (const item of files) add(item.filePath);
+    } catch (error) {
+      // Not every install keeps versioned ASARs in userData.
+    }
+  };
+
+  if (processRef?.resourcesPath) add(path.join(processRef.resourcesPath, "obsidian.asar"));
+
+  const electron = miniWorldMapNodeRequire("electron");
+  const electronApp = electron?.remote?.app || electron?.app;
+  try {
+    const userData = electronApp?.getPath?.("userData");
+    const version = electronApp?.getVersion?.();
+    if (userData && version) add(path.join(userData, `obsidian-${version}.asar`));
+    addVersioned(userData);
+  } catch (error) {
+    // Obsidian may not expose electron.remote from the renderer.
+  }
+
+  const home = os?.homedir?.();
+  if (home) {
+    if (processRef?.platform === "darwin") {
+      addVersioned(path.join(home, "Library", "Application Support", "obsidian"));
+      add("/Applications/Obsidian.app/Contents/Resources/obsidian.asar");
+    } else if (processRef?.platform === "win32") {
+      addVersioned(path.join(processRef.env?.APPDATA || path.join(home, "AppData", "Roaming"), "obsidian"));
+    } else {
+      addVersioned(path.join(processRef?.env?.XDG_CONFIG_HOME || path.join(home, ".config"), "obsidian"));
+    }
+  }
+
+  miniWorldMapAsarCandidatesCache = candidates;
+  return candidates;
+}
+
+function findMiniWorldMapAsarEntry(files, assetPath) {
+  const parts = String(assetPath || "").replace(/^\/+/, "").split("/").filter(Boolean);
+  let entry = { files };
+  for (const part of parts) {
+    entry = entry?.files?.[part];
+    if (!entry) return null;
+  }
+  return entry;
+}
+
+function readMiniWorldMapAsarFile(asarPath, assetPath) {
+  const fs = miniWorldMapNodeRequire("fs");
+  const path = miniWorldMapNodeRequire("path");
+  if (!fs || !path) return null;
+  let fd = null;
+  try {
+    fd = fs.openSync(asarPath, "r");
+    const sizeHeader = Buffer.alloc(16);
+    fs.readSync(fd, sizeHeader, 0, sizeHeader.length, 0);
+    const headerSize = sizeHeader.readUInt32LE(8);
+    const jsonSize = sizeHeader.readUInt32LE(12);
+    if (!Number.isFinite(headerSize) || !Number.isFinite(jsonSize) || jsonSize <= 0 || jsonSize > headerSize) return null;
+
+    const headerBuffer = Buffer.alloc(jsonSize);
+    fs.readSync(fd, headerBuffer, 0, jsonSize, 16);
+    const header = JSON.parse(headerBuffer.toString("utf8"));
+    const normalizedAssetPath = String(assetPath || "").replace(/^\/+/, "");
+    const entry = findMiniWorldMapAsarEntry(header.files, normalizedAssetPath);
+    if (!entry) return null;
+    if (entry.unpacked) {
+      return fs.readFileSync(path.join(`${asarPath}.unpacked`, normalizedAssetPath)).toString("utf8");
+    }
+    if (!Number.isFinite(entry.size) || entry.offset === undefined) return null;
+    const start = 12 + headerSize + Number(entry.offset);
+    const content = Buffer.alloc(entry.size);
+    fs.readSync(fd, content, 0, entry.size, start);
+    return content.toString("utf8");
+  } catch (error) {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch (error) {
+        // Ignore close failures; the renderer can fall back to canvas.
+      }
+    }
+  }
+}
+
+function loadMiniWorldMapPixiRuntime() {
+  if (typeof window !== "undefined" && window.PIXI) return window.PIXI;
+  if (miniWorldMapPixiRuntime) return miniWorldMapPixiRuntime;
+
+  for (const asarPath of miniWorldMapAsarCandidates()) {
+    const source = readMiniWorldMapAsarFile(asarPath, OBSIDIAN_PIXI_ASSET_PATH);
+    if (!source) continue;
+    try {
+      const PIXI = new Function(`${source}\nreturn PIXI;`)();
+      if (PIXI) {
+        miniWorldMapPixiRuntime = PIXI;
+        if (typeof window !== "undefined") window.PIXI = PIXI;
+        return PIXI;
+      }
+    } catch (error) {
+      console.error("Mini World Map failed to initialize Pixi from Obsidian bundle", error);
+    }
+  }
+
+  return null;
+}
+
+class MiniWorldMapPixiRenderer {
+  constructor(containerEl, PIXI) {
+    this.containerEl = containerEl;
+    this.PIXI = PIXI;
+    this.view = containerEl.createEl("canvas", {
+      cls: "mwm-canvas mwm-pixi-canvas",
+      attr: {
+        role: "img",
+        "aria-label": "Mini World Map graph",
+        tabindex: "0"
+      }
+    });
+    this.app = new PIXI.Application({
+      view: this.view,
+      antialias: true,
+      backgroundAlpha: 0,
+      autoStart: false,
+      resolution: window.devicePixelRatio || 1,
+      autoDensity: true
+    });
+    this.background = new PIXI.Graphics();
+    this.world = new PIXI.Container();
+    this.rings = new PIXI.Graphics();
+    this.baseEdges = new PIXI.Graphics();
+    this.baseEdgeSprites = new PIXI.Container();
+    this.highlightEdges = new PIXI.Graphics();
+    this.focusNodes = new PIXI.Graphics();
+    this.nodes = new PIXI.Container();
+    this.labels = new PIXI.Container();
+    this.measureCanvas = document.createElement("canvas");
+    this.measureCtx = this.measureCanvas.getContext("2d");
+    this.labelPool = [];
+    this.activeLabels = 0;
+    this.nodeSprites = new Map();
+    this.nodeTextureCache = new Map();
+    this.hasFrame = false;
+    this.lastActiveKey = "";
+    this.lastViewportWidth = 0;
+    this.lastViewportHeight = 0;
+    this.rendererWidth = 0;
+    this.rendererHeight = 0;
+    this.rendererDpr = 0;
+    this.textStyleCache = new Map();
+    this.baseEdgeSpritePool = [];
+    this.activeBaseEdgeSprites = 0;
+    this.edgeTexture = null;
+    this.backgroundKey = "";
+    this.sceneSignature = "";
+    this.dataRef = null;
+    this.layoutRef = null;
+    this.lastPaletteKey = "";
+    this.lastZoomLayerBucket = "";
+    this.lastLabelZoomBucket = "";
+    this.lastTransform = { panX: 0, panY: 0, zoom: 1 };
+    this.currentZoom = 1;
+
+    this.app.stage.addChild(this.background);
+    this.app.stage.addChild(this.world);
+    this.world.addChild(this.rings);
+    this.world.addChild(this.baseEdges);
+    this.world.addChild(this.baseEdgeSprites);
+    this.world.addChild(this.highlightEdges);
+    this.world.addChild(this.focusNodes);
+    this.world.addChild(this.nodes);
+    this.app.stage.addChild(this.labels);
+  }
+
+  destroy() {
+    this.nodeTextureCache.clear();
+    if (this.app) {
+      this.app.destroy(true, { children: true, texture: true, baseTexture: true });
+      this.app = null;
+    }
+    this.edgeTexture = null;
+    this.view?.remove();
+    this.view = null;
+  }
+
+  resize(viewport) {
+    if (!this.app || !viewport) return;
+    const width = Math.max(1, Math.floor(viewport.width || 1));
+    const height = Math.max(1, Math.floor(viewport.height || 1));
+    const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    if (this.rendererWidth === width && this.rendererHeight === height && this.rendererDpr === dpr) return;
+    this.rendererWidth = width;
+    this.rendererHeight = height;
+    this.rendererDpr = dpr;
+    if (this.app.renderer.resolution !== dpr) this.app.renderer.resolution = dpr;
+    this.app.renderer.resize(width, height);
+    this.view.style.width = `${width}px`;
+    this.view.style.height = `${height}px`;
+  }
+
+  render(frame) {
+    if (!this.app || !frame || !frame.data || !frame.bundle) return;
+    const { data, bundle, palette, viewport, panX, panY, zoom } = frame;
+    this.currentZoom = clampFloat(zoom, MIN_CANVAS_ZOOM, MAX_CANVAS_ZOOM, 1);
+    const zoomLayerBucket = this.zoomLayerBucket(this.currentZoom);
+    const labelZoomBucket = this.labelZoomBucket(this.currentZoom);
+    const sceneSignature = this.createSceneSignature(frame);
+    const geometryDirty = Boolean(frame.geometryDirty);
+    const activeKey = frame.activeKey || "";
+    const zoomLayerChanged = this.lastZoomLayerBucket !== zoomLayerBucket;
+    this.showArrow = data.showArrow !== false;
+    this.hasFrame = true;
+    this.lastViewportWidth = Math.max(1, Math.floor(viewport.width || 1));
+    this.lastViewportHeight = Math.max(1, Math.floor(viewport.height || 1));
+
+    this.resize(viewport);
+    this.drawBackground(palette, viewport);
+    this.applyTransform(panX, panY, zoom);
+
+    const sceneChanged = geometryDirty
+      || this.dataRef !== data
+      || this.layoutRef !== bundle.layout
+      || this.sceneSignature !== sceneSignature;
+    if (sceneChanged) {
+      this.rebuildScene(frame);
+      this.sceneSignature = sceneSignature;
+      this.dataRef = data;
+      this.layoutRef = bundle.layout;
+      this.lastZoomLayerBucket = zoomLayerBucket;
+      this.lastLabelZoomBucket = "";
+      this.lastActiveKey = "";
+    } else if (zoomLayerChanged) {
+      this.redrawZoomLayers(frame, { refreshRoutedEdges: frame.mode !== "interactive" });
+    }
+
+    const needsLabelRefresh = sceneChanged
+      || this.lastActiveKey !== activeKey
+      || this.lastLabelZoomBucket !== labelZoomBucket;
+    if (sceneChanged || this.lastActiveKey !== activeKey || zoomLayerChanged || needsLabelRefresh) {
+      this.applyActiveState(frame, { updateLabels: needsLabelRefresh });
+      this.lastActiveKey = activeKey;
+      if (needsLabelRefresh) this.lastLabelZoomBucket = labelZoomBucket;
+    } else {
+      this.updateLabelPositions();
+    }
+
+    this.app.render();
+  }
+
+  canTransformOnly(frame) {
+    if (!this.hasFrame || !frame || !frame.viewport || frame.geometryDirty) return false;
+    const width = Math.max(1, Math.floor(frame.viewport.width || 1));
+    const height = Math.max(1, Math.floor(frame.viewport.height || 1));
+    const zoom = clampFloat(frame.zoom, MIN_CANVAS_ZOOM, MAX_CANVAS_ZOOM, 1);
+    const previousZoom = clampFloat(this.lastTransform?.zoom, MIN_CANVAS_ZOOM, MAX_CANVAS_ZOOM, 1);
+    const zoomMatches = Math.abs(previousZoom - zoom) < 0.0005;
+    return this.lastActiveKey === (frame.activeKey || "")
+      && this.lastViewportWidth === width
+      && this.lastViewportHeight === height
+      && (zoomMatches || frame.allowZoomTransformOnly);
+  }
+
+  transformOnly(frame) {
+    if (!this.app || !frame || !this.canTransformOnly(frame)) return false;
+    const previousZoom = clampFloat(this.lastTransform?.zoom, MIN_CANVAS_ZOOM, MAX_CANVAS_ZOOM, 1);
+    this.currentZoom = clampFloat(frame.zoom, MIN_CANVAS_ZOOM, MAX_CANVAS_ZOOM, 1);
+    this.applyTransform(frame.panX, frame.panY, frame.zoom);
+    const zoomChanged = Math.abs(previousZoom - this.currentZoom) >= 0.0005;
+    if (zoomChanged && frame.allowZoomTransformOnly && frame.data && frame.bundle && frame.palette) {
+      this.redrawZoomLayers(frame);
+      this.applyActiveState(frame, { updateLabels: false });
+    } else {
+      this.updateLabelPositions();
+    }
+    this.app.render();
+    return true;
+  }
+
+  createSceneSignature(frame) {
+    const data = frame.data || {};
+    const bundle = frame.bundle || {};
+    const graph = bundle.graph || {};
+    const layout = bundle.layout || {};
+    const paletteKey = this.paletteSignature(frame.palette);
+    return [
+      graph.rootId || "",
+      graph.focusId || "",
+      data.nodes?.length || 0,
+      data.hierarchy?.length || 0,
+      data.links?.length || 0,
+      data.hoverLinks?.length || 0,
+      Math.round(layout.width || 0),
+      Math.round(layout.height || 0),
+      Math.round((layout.centerX || 0) * 10),
+      Math.round((layout.centerY || 0) * 10),
+      Math.round((layout.swirlStrength || 0) * 1000),
+      data.showArrow !== false ? 1 : 0,
+      paletteKey
+    ].join("|");
+  }
+
+  zoomLayerBucket(zoom) {
+    return String(Math.round(clampFloat(zoom, MIN_CANVAS_ZOOM, MAX_CANVAS_ZOOM, 1) * 1000));
+  }
+
+  labelZoomBucket(zoom) {
+    return String(Math.round(clampFloat(zoom, MIN_CANVAS_ZOOM, MAX_CANVAS_ZOOM, 1) * 120));
+  }
+
+  paletteSignature(palette = {}) {
+    return [
+      palette.bg,
+      palette.line,
+      palette.lineHighlight,
+      palette.node,
+      palette.note,
+      palette.folder,
+      palette.folderMeta,
+      palette.folderRing,
+      palette.tree,
+      palette.ringGuide,
+      palette.fileRing,
+      palette.focus,
+      palette.circle,
+      palette.labelText,
+      palette.labelStroke,
+      palette.link,
+      palette.external,
+      palette.externalLink,
+      palette.unresolved,
+      palette.stroke,
+      palette.glow,
+      palette.fontFamily
+    ].join("|");
+  }
+
+  drawBackground(palette, viewport) {
+    const key = `${palette.bg}|${Math.round(viewport.width)}|${Math.round(viewport.height)}`;
+    if (this.backgroundKey === key) return;
+    this.backgroundKey = key;
+    this.background.clear();
+    this.fillRect(this.background, palette.bg, 0, 0, viewport.width, viewport.height, 1);
+  }
+
+  applyTransform(panX, panY, zoom) {
+    this.world.position.set(panX, panY);
+    this.world.scale.set(zoom);
+    this.lastTransform = { panX, panY, zoom };
+  }
+
+  rebuildScene(frame) {
+    const { data, bundle, palette } = frame;
+    const paletteKey = this.paletteSignature(palette);
+    const paletteChanged = paletteKey !== this.lastPaletteKey;
+    this.rings.clear();
+    this.baseEdges.clear();
+    this.resetBaseEdgeSprites();
+    this.highlightEdges.clear();
+    this.focusNodes.clear();
+    this.clearNodeSprites();
+    if (paletteChanged) {
+      this.clearNodeTextureCache();
+      this.lastPaletteKey = paletteKey;
+    }
+    this.hideLabels();
+    this.drawRings(bundle.layout, palette, { underlay: true, now: frame.now });
+    this.drawBaseEdges(data.links, palette, false);
+    this.drawBaseEdges(data.hierarchy, palette, true);
+    this.drawRings(bundle.layout, palette, { overlay: true, now: frame.now });
+    this.buildNodeSprites(data.nodes, palette, bundle.graph || {});
+  }
+
+  redrawZoomLayers(frame, options = {}) {
+    const { data, bundle, palette } = frame;
+    if (!bundle || !bundle.layout || !palette) return;
+    this.rings.clear();
+    if (options.refreshRoutedEdges) {
+      this.baseEdges.clear();
+      this.drawRoutedBaseEdges(data?.links, palette, false);
+      this.drawRoutedBaseEdges(data?.hierarchy, palette, true);
+    }
+    this.updateBaseEdgeSpriteWidths();
+    this.drawRings(bundle.layout, palette, { underlay: true, now: frame.now });
+    this.drawRings(bundle.layout, palette, { overlay: true, now: frame.now });
+    this.lastZoomLayerBucket = this.zoomLayerBucket(this.currentZoom);
+  }
+
+  color(value, fallback = "#888888") {
+    return pixiParseColor(value) || pixiParseColor(fallback) || { rgb: 0x888888, alpha: 1 };
+  }
+
+  fillRect(graphics, colorValue, x, y, width, height, alpha = 1) {
+    const color = this.color(colorValue);
+    graphics.beginFill(color.rgb, color.alpha * alpha);
+    graphics.drawRect(x, y, width, height);
+    graphics.endFill();
+  }
+
+  lineStyle(graphics, width, colorValue, alpha = 1) {
+    const color = this.color(colorValue);
+    graphics.lineStyle(width, color.rgb, color.alpha * alpha);
+  }
+
+  screenScaledWidth(width) {
+    const zoom = Math.max(MIN_CANVAS_ZOOM, this.currentZoom || 1);
+    return Math.max(0.01, width / zoom);
+  }
+
+  nodeZoomScale() {
+    const zoom = Math.max(MIN_CANVAS_ZOOM, this.currentZoom || 1);
+    return clampFloat(Math.pow(1 / zoom, 0.3), 0.78, 1.34, 1);
+  }
+
+  drawRings(layout, palette, options = {}) {
+    if (!layout || !Array.isArray(layout.rings) || !layout.rings.length) return;
+    const centerX = Number.isFinite(layout.centerX) ? layout.centerX : layout.width / 2;
+    const centerY = Number.isFinite(layout.centerY) ? layout.centerY : layout.height / 2;
+    const alphaScale = options.overlay ? 1.16 : options.underlay ? 0.58 : 1;
+    const swirlStrength = clampFloat(layout.swirlStrength, 0, 1, 0);
+    const spinSpeed = clampFloat(layout.spinSpeed || 0, 0, 1, 0);
+    const elapsedSeconds = Number.isFinite(options.now) && layout.spinStartedAt
+      ? Math.max(0, (options.now - layout.spinStartedAt) / 1000)
+      : 0;
+
+    for (const ring of layout.rings) {
+      if (!Number.isFinite(ring.radius) || ring.radius <= 0) continue;
+      const density = Math.min(1, Math.sqrt(Math.max(1, ring.count || 1)) / 9);
+      const phase = swirlOrbitAngleForRing(ring.depth, ring.radius, spinSpeed, elapsedSeconds);
+      if (options.overlay) {
+        this.lineStyle(this.rings, this.screenScaledWidth(5.5), palette.ringGuide || palette.folderRing || palette.line, (0.032 + density * 0.022) * alphaScale);
+        pixiDrawRingPath(this.rings, centerX, centerY, ring.radius, ring.depth, swirlStrength, phase);
+      }
+      this.lineStyle(this.rings, this.screenScaledWidth(options.overlay ? 1.35 : 0.78), palette.ringGuide || palette.folderRing || palette.line, (0.13 + density * 0.09) * alphaScale);
+      pixiDrawRingPath(this.rings, centerX, centerY, ring.radius, ring.depth, swirlStrength, phase);
+    }
+  }
+
+  drawBaseEdges(edges, palette, hierarchy) {
+    for (const item of edges || []) {
+      if (item.hoverOnly) continue;
+      const style = this.baseEdgeStyle(item, palette, hierarchy);
+      if (this.canDrawEdgeSprite(item)) this.drawBaseEdgeSprite(item, style);
+      else this.drawBaseEdgePath(item, style);
+    }
+  }
+
+  drawRoutedBaseEdges(edges, palette, hierarchy) {
+    for (const item of edges || []) {
+      if (item.hoverOnly || this.canDrawEdgeSprite(item)) continue;
+      this.drawBaseEdgePath(item, this.baseEdgeStyle(item, palette, hierarchy));
+    }
+  }
+
+  baseEdgeStyle(item, palette, hierarchy) {
+    const unresolved = item.edge && item.edge.unresolvedCount;
+    const external = item.external || (item.edge && item.edge.externalCount);
+    const externalHierarchy = hierarchy && external;
+    const outsideLink = !hierarchy && external;
+    const color = unresolved
+      ? palette.unresolved
+      : outsideLink
+        ? (palette.externalLink || palette.external)
+        : hierarchy
+          ? (palette.tree || palette.folderRing || palette.line)
+          : palette.link;
+    const baseAlpha = (hierarchy
+      ? (externalHierarchy ? 0.18 : 0.34)
+      : (outsideLink ? 0.082 : 0.056));
+    const minAlpha = hierarchy ? 0.09 : outsideLink ? 0.03 : 0.024;
+    const width = hierarchy
+      ? (externalHierarchy ? 1.12 : 1.48)
+      : (outsideLink ? item.width * 0.72 : item.width * 0.7);
+    return {
+      color,
+      alpha: Math.max(minAlpha, baseAlpha),
+      width: Math.max(outsideLink ? 0.58 : 0.45, width)
+    };
+  }
+
+  drawBaseEdgePath(item, style) {
+    this.lineStyle(this.baseEdges, this.screenScaledWidth(style.width), style.color, style.alpha);
+    this.drawEdgePath(this.baseEdges, item);
+  }
+
+  canDrawEdgeSprite(item) {
+    if (!item || item.hoverOnly) return false;
+    if (item.dynamicRoute || item.route) return false;
+    const source = item.sourcePoint;
+    const target = item.targetPoint;
+    return Boolean(source && target && Math.hypot(target.x - source.x, target.y - source.y) > 0.5);
+  }
+
+  drawBaseEdgeSprite(item, style) {
+    const source = item.sourcePoint;
+    const target = item.targetPoint;
+    const dx = target.x - source.x;
+    const dy = target.y - source.y;
+    const length = Math.hypot(dx, dy);
+    if (length <= 0.5) return;
+    const color = this.color(style.color);
+    const sprite = this.nextBaseEdgeSprite();
+    sprite.visible = true;
+    sprite.position.set(source.x, source.y);
+    sprite.rotation = Math.atan2(dy, dx);
+    sprite.tint = color.rgb;
+    sprite.alpha = color.alpha * style.alpha;
+    sprite.width = length;
+    sprite.__mwmScreenWidth = style.width;
+    this.setBaseEdgeSpriteWidth(sprite);
+  }
+
+  nextBaseEdgeSprite() {
+    let sprite = this.baseEdgeSpritePool[this.activeBaseEdgeSprites];
+    if (!sprite) {
+      sprite = new this.PIXI.Sprite(this.edgeLineTexture());
+      if (sprite.anchor && typeof sprite.anchor.set === "function") sprite.anchor.set(0, 0.5);
+      sprite.eventMode = "none";
+      sprite.interactive = false;
+      sprite.roundPixels = false;
+      this.baseEdgeSpritePool.push(sprite);
+      this.baseEdgeSprites.addChild(sprite);
+    }
+    this.activeBaseEdgeSprites += 1;
+    return sprite;
+  }
+
+  edgeLineTexture() {
+    if (this.edgeTexture) return this.edgeTexture;
+    const graphics = new this.PIXI.Graphics();
+    graphics.beginFill(0xffffff, 1);
+    graphics.drawRect(0, 0, 1, 1);
+    graphics.endFill();
+    this.edgeTexture = this.app.renderer.generateTexture(graphics);
+    graphics.destroy();
+    return this.edgeTexture;
+  }
+
+  resetBaseEdgeSprites() {
+    this.activeBaseEdgeSprites = 0;
+    for (const sprite of this.baseEdgeSpritePool) {
+      sprite.visible = false;
+    }
+  }
+
+  updateBaseEdgeSpriteWidths() {
+    for (let index = 0; index < this.activeBaseEdgeSprites; index += 1) {
+      this.setBaseEdgeSpriteWidth(this.baseEdgeSpritePool[index]);
+    }
+  }
+
+  setBaseEdgeSpriteWidth(sprite) {
+    if (!sprite) return;
+    sprite.height = this.screenScaledWidth(sprite.__mwmScreenWidth || 1);
+  }
+
+  drawHighlightedEdges(frame) {
+    const data = frame.data;
+    const active = frame.active || {};
+    const palette = frame.palette;
+    this.highlightEdges.clear();
+    if (!active.highlightedEdges || !active.highlightedEdges.size) return;
+    for (const key of active.highlightedEdges) {
+      const item = data.edgesById.get(key);
+      if (!item) continue;
+      const hierarchy = data.hierarchyParentByNode.get(item.target) === item
+        || data.hierarchyChildrenByNode.get(item.source)?.includes(item);
+      const outsideLink = !hierarchy && (item.external || (item.edge && item.edge.externalCount));
+      const color = outsideLink ? (palette.externalLink || palette.external) : (palette.lineHighlight || palette.focus);
+      this.lineStyle(this.highlightEdges, this.screenScaledWidth(hierarchy ? 2.35 : outsideLink ? 2.2 : 2.45), color, hierarchy ? 0.78 : outsideLink ? 0.76 : 0.88);
+      this.drawEdgePath(this.highlightEdges, item);
+      if (!hierarchy && this.showArrow) this.drawArrow(this.highlightEdges, item, color, 0.95);
+    }
+  }
+
+  drawEdgePath(graphics, item) {
+    const source = item.sourcePoint;
+    const target = item.targetPoint;
+    const route = item.dynamicRoute || item.route;
+    if (!source || !target) return;
+    graphics.moveTo(source.x, source.y);
+    if (route && (route.kind === "outer" || route.kind === "external" || route.kind === "dynamic-orbit")) {
+      const startAngle = route.sourceAngle;
+      const endAngle = Number.isFinite(route.endAngle) ? route.endAngle : route.targetAngle;
+      const arcStart = radialPoint(route.centerX, route.centerY, route.radius, startAngle);
+      const arcEnd = radialPoint(route.centerX, route.centerY, route.radius, endAngle);
+      graphics.lineTo(arcStart.x, arcStart.y);
+      graphics.arc(route.centerX, route.centerY, route.radius, startAngle, endAngle);
+      graphics.lineTo(arcEnd.x, arcEnd.y);
+      graphics.lineTo(target.x, target.y);
+      return;
+    }
+    if (route && route.kind === "curve") {
+      const centerX = Number.isFinite(source.centerX) ? source.centerX : (source.x + target.x) / 2;
+      const centerY = Number.isFinite(source.centerY) ? source.centerY : (source.y + target.y) / 2;
+      const midX = (source.x + target.x) / 2;
+      const midY = (source.y + target.y) / 2;
+      const pull = Number.isFinite(route.curveStrength) ? route.curveStrength : (item.external ? 0.28 : 0.16);
+      graphics.quadraticCurveTo(midX + (centerX - midX) * pull, midY + (centerY - midY) * pull, target.x, target.y);
+      return;
+    }
+    graphics.lineTo(target.x, target.y);
+  }
+
+  drawArrow(graphics, item, colorValue, alpha = 1) {
+    const source = this.arrowSourcePoint(item);
+    const target = item.targetPoint;
+    if (!source || !target) return;
+    const dx = target.x - source.x;
+    const dy = target.y - source.y;
+    const length = Math.hypot(dx, dy);
+    if (length < 0.001) return;
+    const angle = Math.atan2(dy, dx);
+    const targetRadius = Math.max(4, item.targetPoint?.nodeRadius || 6);
+    const zoom = Math.max(MIN_CANVAS_ZOOM, this.currentZoom || 1);
+    const size = 7 / zoom;
+    const spread = 0.48;
+    const color = this.color(colorValue);
+    const tipX = target.x - Math.cos(angle) * (targetRadius + 2 / zoom);
+    const tipY = target.y - Math.sin(angle) * (targetRadius + 2 / zoom);
+    graphics.beginFill(color.rgb, color.alpha * alpha);
+    graphics.moveTo(tipX, tipY);
+    graphics.lineTo(tipX - Math.cos(angle - spread) * size, tipY - Math.sin(angle - spread) * size);
+    graphics.lineTo(tipX - Math.cos(angle + spread) * size, tipY - Math.sin(angle + spread) * size);
+    graphics.closePath();
+    graphics.endFill();
+  }
+
+  arrowSourcePoint(item) {
+    const route = item.dynamicRoute || item.route;
+    if (route && (route.kind === "outer" || route.kind === "external" || route.kind === "dynamic-orbit")) {
+      const endAngle = Number.isFinite(route.endAngle) ? route.endAngle : route.targetAngle;
+      return radialPoint(route.centerX, route.centerY, route.radius, endAngle);
+    }
+    if (route && route.kind === "curve") {
+      const source = item.sourcePoint;
+      const target = item.targetPoint;
+      const centerX = Number.isFinite(source.centerX) ? source.centerX : (source.x + target.x) / 2;
+      const centerY = Number.isFinite(source.centerY) ? source.centerY : (source.y + target.y) / 2;
+      const midX = (source.x + target.x) / 2;
+      const midY = (source.y + target.y) / 2;
+      const pull = Number.isFinite(route.curveStrength) ? route.curveStrength : (item.external ? 0.28 : 0.16);
+      return {
+        x: midX + (centerX - midX) * pull,
+        y: midY + (centerY - midY) * pull
+      };
+    }
+    return item.sourcePoint;
+  }
+
+  buildNodeSprites(nodes, palette, graph = {}) {
+    for (const item of nodes || []) {
+      const texture = this.getNodeTexture(item, palette, graph);
+      const sprite = new this.PIXI.Sprite(texture);
+      if (sprite.anchor && typeof sprite.anchor.set === "function") sprite.anchor.set(0.5);
+      sprite.position.set(item.point.x, item.point.y);
+      sprite.alpha = item.node.type === "external" && !item.node.externalProxy ? 0.78 : 0.92;
+      this.nodes.addChild(sprite);
+      this.nodeSprites.set(item.node.id, {
+        sprite,
+        item,
+        baseAlpha: sprite.alpha
+      });
+    }
+  }
+
+  clearNodeSprites() {
+    this.nodes.removeChildren();
+    this.nodeSprites.clear();
+  }
+
+  clearNodeTextureCache() {
+    for (const texture of this.nodeTextureCache.values()) {
+      if (texture && typeof texture.destroy === "function") texture.destroy(true);
+    }
+    this.nodeTextureCache.clear();
+  }
+
+  getNodeTexture(item, palette, graph = {}) {
+    const colors = this.nodeColors(item, palette, graph);
+    const radius = Math.max(3, Math.round(item.radius * 2) / 2);
+    const rootNode = item.node.id === graph.rootId;
+    const folderNode = item.node.type === "folder";
+    const strokeWidth = Math.max(1.1, rootNode ? 1.75 : folderNode ? 1.35 : 1.1);
+    const fill = this.color(colors.fill);
+    const stroke = this.color(colors.stroke);
+    const key = [
+      radius,
+      strokeWidth,
+      fill.rgb,
+      Math.round(fill.alpha * 100),
+      stroke.rgb,
+      Math.round(stroke.alpha * 100),
+      item.node.type,
+      item.node.externalProxy ? 1 : 0
+    ].join("|");
+    const cached = this.nodeTextureCache.get(key);
+    if (cached) return cached;
+
+    const pad = Math.ceil(strokeWidth + 4);
+    const size = Math.ceil((radius + pad) * 2);
+    const center = size / 2;
+    const graphics = new this.PIXI.Graphics();
+    graphics.beginFill(fill.rgb, fill.alpha);
+    graphics.drawCircle(center, center, radius);
+    graphics.endFill();
+    graphics.lineStyle(strokeWidth, stroke.rgb, stroke.alpha);
+    graphics.drawCircle(center, center, radius);
+    if (item.node.type === "external" || item.node.externalProxy || item.node.type === "unresolved") {
+      graphics.lineStyle(0.8, stroke.rgb, stroke.alpha * 0.48);
+      graphics.drawCircle(center, center, Math.max(1, radius + 2.2));
+    }
+
+    let texture;
+    try {
+      texture = this.app.renderer.generateTexture(graphics, { resolution: 2 });
+    } catch (error) {
+      texture = this.app.renderer.generateTexture(graphics);
+    }
+    graphics.destroy();
+    this.nodeTextureCache.set(key, texture);
+    if (this.nodeTextureCache.size > 320) {
+      const firstKey = this.nodeTextureCache.keys().next().value;
+      const firstTexture = this.nodeTextureCache.get(firstKey);
+      if (firstTexture && typeof firstTexture.destroy === "function") firstTexture.destroy(true);
+      this.nodeTextureCache.delete(firstKey);
+    }
+    return texture;
+  }
+
+  nodeColors(item, palette, graph = {}) {
+    const nodeId = item.node.id;
+    const rootNode = nodeId === graph.rootId;
+    const folderNode = item.node.type === "folder";
+    const folderWithMeta = folderNode && Boolean(item.node.representativeFile);
+    const externalGroup = item.node.type === "external" && !item.node.externalProxy;
+    const externalFile = Boolean(item.node.externalProxy);
+    const unresolvedNode = item.node.type === "unresolved";
+    const fill = unresolvedNode
+      ? palette.unresolved
+      : externalGroup
+        ? palette.node
+        : folderWithMeta
+          ? palette.folderMeta
+          : folderNode
+            ? palette.folder
+            : (palette.note || palette.node);
+    const stroke = rootNode
+      ? palette.circle
+      : unresolvedNode
+        ? palette.unresolved
+        : externalGroup || externalFile
+          ? palette.external
+          : folderNode
+            ? palette.folderRing
+            : palette.fileRing || palette.stroke;
+    return { fill, stroke };
+  }
+
+  applyActiveState(frame, options = {}) {
+    const active = frame.active || {};
+    const data = frame.data;
+    const palette = frame.palette;
+    const graph = frame.bundle?.graph || {};
+    const related = active.relatedNodes || new Set();
+    const pinned = active.pinnedNodeIds || new Set();
+    const focusColor = this.color(palette.focus || palette.circle);
+    const glowColor = this.color(palette.glow || palette.focus || palette.circle);
+    const nodeZoomScale = this.nodeZoomScale();
+    this.focusNodes.clear();
+    this.drawHighlightedEdges(frame);
+
+    for (const [nodeId, record] of this.nodeSprites.entries()) {
+      const item = record.item;
+      const selected = nodeId === frame.selectedNodeId;
+      const focused = nodeId === active.activeNodeId
+        || selected
+        || pinned.has(nodeId)
+        || nodeId === graph.focusId
+        || item.searchMatch;
+      const isRelated = related.has(nodeId);
+      const dimmed = active.hasActive && !focused && !isRelated;
+      record.sprite.alpha = dimmed ? Math.max(0.22, record.baseAlpha * 0.32) : focused ? 1 : isRelated ? Math.min(1, record.baseAlpha + 0.08) : record.baseAlpha;
+      const scale = focused ? 1.16 : isRelated ? 1.06 : 1;
+      record.sprite.scale.set(scale * nodeZoomScale);
+      if (focused || (isRelated && related.size <= 900)) {
+        const color = focused ? focusColor : glowColor;
+        const alpha = focused ? 0.24 : 0.1;
+        this.focusNodes.beginFill(color.rgb, color.alpha * alpha);
+        this.focusNodes.drawCircle(item.point.x, item.point.y, item.radius * nodeZoomScale * (focused ? 2.05 : 1.55));
+        this.focusNodes.endFill();
+      }
+    }
+
+    if (options.updateLabels !== false) this.updateLabels(frame);
+    this.updateLabelPositions();
+  }
+
+  updateLabels(frame) {
+    const data = frame.data;
+    const graph = frame.bundle?.graph || {};
+    const active = frame.active || {};
+    const palette = frame.palette;
+    const hoverOnlyLabels = normalizeLabelVisibility(frame.labelVisibility) === "hover";
+    const interactive = frame.mode === "interactive" || frame.mode === "spin";
+    const budget = interactive ? 120 : 220;
+    const items = [];
+    const seen = new Set();
+    const pushItem = id => {
+      if (id === null || id === undefined || seen.has(id)) return;
+      const item = data.nodesById.get(id);
+      if (!item) return;
+      seen.add(id);
+      items.push(item);
+    };
+
+    pushItem(active.activeNodeId);
+    pushItem(frame.selectedNodeId);
+    pushItem(graph.focusId);
+    for (const id of active.pinnedNodeIds || []) pushItem(id);
+    for (const item of data.searchMatchItems || []) pushItem(item.node.id);
+    for (const id of active.labelNodes || []) {
+      if (items.length >= budget) break;
+      pushItem(id);
+    }
+    if (!hoverOnlyLabels) {
+      for (const item of data.labelItems || []) {
+        if (items.length >= budget) break;
+        if (seen.has(item.node.id)) continue;
+        if (zoomLabelStrength(item, frame.zoom, graph) <= 0.08 && !item.searchMatch) continue;
+        pushItem(item.node.id);
+      }
+    }
+
+    this.hideLabels();
+    const fontSize = 12;
+    const lineHeight = 14;
+    const screenScale = labelScreenScale(frame.zoom);
+    for (const item of items) {
+      const labelStrength = this.labelStrengthForItem(item, frame, active, graph, hoverOnlyLabels);
+      if (labelStrength <= 0.02) continue;
+      const rootNode = item.node.id === graph.rootId;
+      const folderNode = item.node.type === "folder";
+      const leading = Number.isFinite(item.labelRank) && item.labelRank < 36;
+      const localScale = screenScale * (rootNode ? 1.18 : item.radius >= 24 ? 1.1 : item.radius >= 15 ? 1.04 : 1);
+      const weight = rootNode || leading || folderNode ? "600" : "400";
+      const maxWidth = (rootNode ? 190 : folderNode ? 156 : leading ? 146 : 124) * localScale;
+      const maxLines = rootNode || item.node.id === active.activeNodeId || item.node.id === frame.selectedNodeId ? 4 : 3;
+      this.measureCtx.font = `${weight} ${fontSize * localScale}px ${palette.fontFamily}`;
+      const lines = wrapCanvasLabel(this.measureCtx, item.label, maxWidth, maxLines);
+      if (!lines.length) continue;
+
+      const text = this.nextLabel();
+      text.text = lines.join("\n");
+      text.visible = true;
+      text.alpha = labelStrength * (rootNode ? 0.98 : leading || active.labelNodes?.has(item.node.id) ? 0.94 : 0.86);
+      text.anchor.set(0.5, 0);
+      text.__mwmItem = item;
+      text.__mwmLocalScale = localScale;
+      text.style = this.getTextStyle({
+        fontFamily: palette.fontFamily,
+        fontSize: fontSize * localScale,
+        fontWeight: weight,
+        lineHeight: lineHeight * localScale,
+        fill: this.color(rootNode ? (palette.circle || palette.labelText || palette.text) : (palette.labelText || palette.text)).rgb,
+        stroke: this.color(palette.labelStroke || palette.bg).rgb,
+        strokeThickness: (rootNode ? 6 : 5) * localScale
+      });
+    }
+  }
+
+  labelStrengthForItem(item, frame, active, graph, hoverOnlyLabels) {
+    if (!item || !item.node) return 0;
+    const nodeId = item.node.id;
+    const directlyRequested = nodeId === active.activeNodeId
+      || nodeId === frame.selectedNodeId
+      || active.pinnedNodeIds?.has(nodeId)
+      || item.searchMatch;
+    if (hoverOnlyLabels) return directlyRequested ? 1 : 0;
+    if (directlyRequested || active.labelNodes?.has(nodeId)) return 1;
+    return zoomLabelStrength(item, frame.zoom, graph);
+  }
+
+  updateLabelPositions() {
+    const { panX, panY, zoom } = this.lastTransform || { panX: 0, panY: 0, zoom: 1 };
+    for (let index = 0; index < this.activeLabels; index += 1) {
+      const text = this.labelPool[index];
+      const item = text?.__mwmItem;
+      if (!text || !item) continue;
+      const localScale = text.__mwmLocalScale || 1;
+      const nodeZoomScale = this.nodeZoomScale();
+      text.x = panX + item.point.x * zoom;
+      text.y = panY + item.point.y * zoom + item.radius * nodeZoomScale * zoom + 8 * localScale;
+    }
+  }
+
+  nextLabel() {
+    let text = this.labelPool[this.activeLabels];
+    if (!text) {
+      text = new this.PIXI.Text("");
+      text.eventMode = "none";
+      text.resolution = 2;
+      this.labelPool.push(text);
+      this.labels.addChild(text);
+    }
+    this.activeLabels += 1;
+    return text;
+  }
+
+  hideLabels() {
+    for (let index = 0; index < this.labelPool.length; index += 1) {
+      this.labelPool[index].visible = false;
+    }
+    this.activeLabels = 0;
+  }
+
+  getTextStyle(options) {
+    const key = [
+      options.fontFamily,
+      Math.round(options.fontSize * 10) / 10,
+      options.fontWeight,
+      Math.round(options.lineHeight * 10) / 10,
+      options.fill,
+      options.stroke,
+      Math.round(options.strokeThickness * 10) / 10
+    ].join("|");
+    let style = this.textStyleCache.get(key);
+    if (!style) {
+      style = new this.PIXI.TextStyle({
+        fontFamily: options.fontFamily,
+        fontSize: options.fontSize,
+        fontWeight: options.fontWeight,
+        lineHeight: options.lineHeight,
+        align: "center",
+        fill: options.fill,
+        stroke: options.stroke,
+        strokeThickness: options.strokeThickness,
+        wordWrap: false
+      });
+      this.textStyleCache.set(key, style);
+      if (this.textStyleCache.size > 160) {
+        const firstKey = this.textStyleCache.keys().next().value;
+        this.textStyleCache.delete(firstKey);
+      }
+    }
+    return style;
+  }
+}
+
+function pixiParseColor(value) {
+  if (!value || typeof value !== "string") return null;
+  const input = value.trim();
+  const hex = input.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
+  if (hex) {
+    let raw = hex[1];
+    if (raw.length === 3) raw = raw.split("").map(ch => ch + ch).join("");
+    const rgb = parseInt(raw.slice(0, 6), 16);
+    const alpha = raw.length === 8 ? parseInt(raw.slice(6, 8), 16) / 255 : 1;
+    return { rgb, alpha };
+  }
+
+  const rgb = input.match(/^rgba?\((.+)\)$/i);
+  if (rgb) {
+    const parts = rgb[1]
+      .replace(/\s*\/\s*/g, " ")
+      .replace(/,/g, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+    if (parts.length >= 3) {
+      const r = parsePixiCssChannel(parts[0]);
+      const g = parsePixiCssChannel(parts[1]);
+      const b = parsePixiCssChannel(parts[2]);
+      const alpha = parts.length >= 4 ? parsePixiCssAlpha(parts[3]) : 1;
+      if ([r, g, b, alpha].every(Number.isFinite)) return { rgb: (r << 16) | (g << 8) | b, alpha };
+    }
+  }
+
+  const srgb = input.match(/^color\(\s*srgb\s+(.+)\)$/i);
+  if (srgb) {
+    const parts = srgb[1]
+      .replace(/\s*\/\s*/g, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+    if (parts.length >= 3) {
+      const r = parsePixiCssUnitChannel(parts[0]);
+      const g = parsePixiCssUnitChannel(parts[1]);
+      const b = parsePixiCssUnitChannel(parts[2]);
+      const alpha = parts.length >= 4 ? parsePixiCssAlpha(parts[3]) : 1;
+      if ([r, g, b, alpha].every(Number.isFinite)) return { rgb: (r << 16) | (g << 8) | b, alpha };
+    }
+  }
+
+  return null;
+}
+
+function parsePixiCssChannel(value) {
+  if (String(value).endsWith("%")) return clampNumber(parseFloat(value) * 2.55, 0, 255, 0);
+  return clampNumber(parseFloat(value), 0, 255, 0);
+}
+
+function parsePixiCssUnitChannel(value) {
+  if (String(value).endsWith("%")) return clampNumber(parseFloat(value) * 2.55, 0, 255, 0);
+  return clampNumber(parseFloat(value) * 255, 0, 255, 0);
+}
+
+function parsePixiCssAlpha(value) {
+  if (String(value).endsWith("%")) return clampFloat(parseFloat(value) / 100, 0, 1, 1);
+  return clampFloat(parseFloat(value), 0, 1, 1);
+}
+
+function pixiDrawRingPath(graphics, centerX, centerY, radius, depth = 0, swirlStrength = 0, orbitPhase = 0) {
+  const strength = clampFloat(swirlStrength, 0, 1, 0);
+  if (strength <= 0.001) {
+    graphics.drawCircle(centerX, centerY, radius);
+    return;
+  }
+
+  const fullCircle = Math.PI * 2;
+  const steps = 180;
+  const amplitude = Math.min(radius * 0.045, 58) * strength;
+  const phase = depth * 0.74 + strength * 0.9 + orbitPhase;
+
+  for (let step = 0; step <= steps; step += 1) {
+    const t = step / steps;
+    const angle = t * fullCircle;
+    const twist = Math.sin(angle - phase) * 0.08 * strength;
+    const ripple = Math.sin(angle * 2 + phase) * amplitude
+      + Math.sin(angle * 5 - phase * 0.7) * amplitude * 0.26;
+    const r = Math.max(1, radius + ripple);
+    const x = centerX + Math.cos(angle + twist) * r;
+    const y = centerY + Math.sin(angle + twist) * r;
+    if (step === 0) graphics.moveTo(x, y);
+    else graphics.lineTo(x, y);
+  }
+  graphics.closePath();
+}
+
 class MiniWorldMapPlugin extends Plugin {
   async onload() {
     this.settings = normalizeSettings(await this.loadData());
@@ -190,13 +1275,13 @@ class MiniWorldMapPlugin extends Plugin {
     return this.app.workspace.getLeavesOfType(VIEW_TYPE_MINI_WORLD_MAP).length > 0;
   }
 
-  async rebuildIndex(reason) {
+  async rebuildIndex(reason, options = {}) {
     try {
       const started = performance.now();
       this.index = new WorldMapIndex(this.app, this.settings);
       this.index.rebuild();
       const elapsed = Math.round(performance.now() - started);
-      this.refreshViews();
+      this.refreshViews(options);
       if (reason === "manual") {
         new Notice(`Mini World Map rebuilt in ${elapsed} ms`);
       }
@@ -206,10 +1291,10 @@ class MiniWorldMapPlugin extends Plugin {
     }
   }
 
-  refreshViews() {
+  refreshViews(options = {}) {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MINI_WORLD_MAP)) {
       const view = leaf.view;
-      if (view && typeof view.refresh === "function") view.refresh();
+      if (view && typeof view.refresh === "function") view.refresh(options);
     }
   }
 
@@ -239,8 +1324,27 @@ class MiniWorldMapPlugin extends Plugin {
 
   async saveSettings(options = {}) {
     await this.saveData(this.settings);
-    if (options.rebuild !== false) this.scheduleRebuild("settings");
-    else this.refreshViews();
+    if (options.rebuild !== false) {
+      if (options.immediateRebuild) {
+        if (this.rebuildTimer) {
+          window.clearTimeout(this.rebuildTimer);
+          this.rebuildTimer = null;
+        }
+        await this.rebuildIndex("settings", { preservePanel: options.preservePanel === true });
+      }
+      else this.scheduleRebuild("settings");
+    } else if (options.refresh !== false) this.refreshViews();
+  }
+
+  applySettingsToOpenViews(keys, options = {}) {
+    const settingKeys = Array.isArray(keys) ? keys : [keys].filter(Boolean);
+    if (!settingKeys.length) return;
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MINI_WORLD_MAP)) {
+      const view = leaf.view;
+      if (view && typeof view.applyPluginSettings === "function") {
+        view.applyPluginSettings(settingKeys, options);
+      }
+    }
   }
 
   async loadNativeGraphSettings() {
@@ -725,7 +1829,13 @@ class WorldMapIndex {
 
   aggregateVisibleLinkEdges(visible, state, rootId) {
     const needsHoverLinks = hoverHighlightsNoteLinks(state.hoverHighlightMode) || Boolean(state.pinNeedsHoverLinks);
-    if (!state.showLinkOverlay && !needsHoverLinks) return {
+    const hiddenLegend = hiddenLegendSetFromState(state);
+    const wantsInternalLinkOverlay = !hiddenLegend.has("link");
+    const wantsUnresolvedLinkOverlay = wantsInternalLinkOverlay && !hiddenLegend.has("dashed-link");
+    const wantsExternalLinkOverlay = !hiddenLegend.has("outside-link");
+    const wantsExternalNodes = !hiddenLegend.has("outside") || !hiddenLegend.has("outside-file");
+    const showExternalLinks = state.showExternalLinks !== false && rootId !== ROOT_ID && (wantsExternalNodes || wantsExternalLinkOverlay);
+    if (!wantsInternalLinkOverlay && !wantsUnresolvedLinkOverlay && !needsHoverLinks && !showExternalLinks) return {
       linkEdges: [],
       hoverLinkEdges: [],
       externalNodes: [],
@@ -736,7 +1846,6 @@ class WorldMapIndex {
     const aggregate = new Map();
     const externalNodes = new Map();
     const externalHierarchyEdges = [];
-    const showExternalLinks = state.showExternalLinks !== false;
     const externalDetailMode = state.externalDetailMode || this.settings.externalDetailMode || DEFAULT_SETTINGS.externalDetailMode;
     const externalLimit = clampNumber(
       state.externalLinkAnchorLimit === undefined || state.externalLinkAnchorLimit === null ? this.settings.externalLinkAnchorLimit : state.externalLinkAnchorLimit,
@@ -807,13 +1916,39 @@ class WorldMapIndex {
     );
     const showAllLinks = Boolean(state.showCompleteRoot);
     const completeLinkLimit = showAllLinks ? MAX_LINK_LIMIT : linkLimit;
-    const linkEdges = state.showLinkOverlay ? allLinkEdges.slice(0, completeLinkLimit) : [];
-    const hoverLinkEdges = showAllLinks && state.showLinkOverlay ? linkEdges : allLinkEdges;
+    const linkEdges = [];
+    const visibleLinkIds = new Set();
+    const allowsVisibleLink = edge => {
+      if (!edge) return false;
+      if (edge.externalCount) return wantsExternalLinkOverlay && (!edge.unresolvedCount || wantsUnresolvedLinkOverlay);
+      if (edge.unresolvedCount) return wantsUnresolvedLinkOverlay;
+      return wantsInternalLinkOverlay;
+    };
+    const pushVisibleLink = edge => {
+      if (!allowsVisibleLink(edge) || visibleLinkIds.has(edge.id)) return;
+      visibleLinkIds.add(edge.id);
+      linkEdges.push(edge);
+    };
+    const visibleLinkLimit = showAllLinks
+      ? MAX_LINK_LIMIT
+      : clampNumber(
+        Math.max(completeLinkLimit, showExternalLinks ? Math.min(MAX_LINK_LIMIT, Math.max(externalLimit, 120)) : 0),
+        0,
+        MAX_LINK_LIMIT,
+        DEFAULT_SETTINGS.linkLimit
+      );
+    for (const edge of allLinkEdges) {
+      if (linkEdges.length >= visibleLinkLimit) break;
+      pushVisibleLink(edge);
+    }
+    const hoverLinkEdges = showAllLinks ? linkEdges : allLinkEdges.filter(allowsVisibleLink);
 
     const usedExternalIds = new Set();
-    const externalNodeEdges = showAllLinks || externalDetailMode === "grouped" || needsHoverLinks
-      ? hoverLinkEdges
-      : linkEdges;
+    const externalNodeEdges = showExternalLinks
+      ? allLinkEdges.filter(edge => edge.externalCount)
+      : needsHoverLinks
+        ? hoverLinkEdges
+        : [];
     for (const edge of externalNodeEdges) {
       if (externalNodes.has(edge.source)) usedExternalIds.add(edge.source);
       if (externalNodes.has(edge.target)) usedExternalIds.add(edge.target);
@@ -1095,8 +2230,6 @@ class MiniWorldMapView extends ItemView {
     this.selectedPinIds = new Set();
     this.nextPinId = 1;
     this.nextPinGroupId = 1;
-    this.lastHoverPinCandidate = null;
-    this.lastHoverPinCandidateExpiresAt = 0;
     this.pinGroupName = "";
     this.lastLayout = null;
     this.renderTimer = null;
@@ -1105,6 +2238,8 @@ class MiniWorldMapView extends ItemView {
     this.edgeElementsByNode = new Map();
     this.edgeElementsById = new Map();
     this.canvas = null;
+    this.pixiRenderer = null;
+    this.pixiUnavailable = false;
     this.canvasData = null;
     this.canvasPalette = null;
     this.canvasPanX = 0;
@@ -1122,6 +2257,12 @@ class MiniWorldMapView extends ItemView {
     this.canvasVisualInitialized = false;
     this.canvasAnimationFrame = null;
     this.canvasSettleTimer = null;
+    this.canvasPanAnimationFrame = null;
+    this.canvasPanVelocityX = 0;
+    this.canvasPanVelocityY = 0;
+    this.canvasZoomAnimationFrame = null;
+    this.canvasTargetZoom = null;
+    this.canvasZoomAnchorPoint = null;
     this.canvasSpringAnimationFrame = null;
     this.canvasSpringState = null;
     this.canvasSwirlAnimationFrame = null;
@@ -1134,6 +2275,7 @@ class MiniWorldMapView extends ItemView {
     this.lastAutoTuneAt = 0;
     this.autoTuneCount = 0;
     this.lastRenderMs = 0;
+    this.pendingRenderOptions = null;
     this.viewportStateByKey = new Map();
     this.currentViewportStateKey = null;
   }
@@ -1164,14 +2306,17 @@ class MiniWorldMapView extends ItemView {
     if (this.renderTimer) window.clearTimeout(this.renderTimer);
     if (this.canvasAnimationFrame) window.cancelAnimationFrame(this.canvasAnimationFrame);
     if (this.canvasSettleTimer) window.clearTimeout(this.canvasSettleTimer);
+    this.cancelCanvasPanMomentum();
+    this.cancelCanvasZoomAnimation();
     this.cancelCanvasSpringBack();
     this.cancelCanvasSwirlAnimation();
+    this.destroyPixiRenderer();
     this.contentEl.empty();
   }
 
-  refresh() {
+  refresh(options = {}) {
     if (!this.containerEl || !this.graphHost) return;
-    this.render();
+    this.render(options);
   }
 
   renderShell() {
@@ -1185,7 +2330,7 @@ class MiniWorldMapView extends ItemView {
     this.graphHost = body.createDiv({ cls: "mwm-graph-host" });
     this.graphHost.addEventListener("wheel", evt => {
       evt.preventDefault();
-      this.zoomAtClientPoint(evt.clientX, evt.clientY, evt.deltaY > 0 ? -1 : 1);
+      this.zoomAtClientPoint(evt.clientX, evt.clientY, evt.deltaY, evt.deltaMode);
     }, { passive: false });
     this.splitter = body.createDiv({
       cls: "mwm-splitter",
@@ -1227,7 +2372,6 @@ class MiniWorldMapView extends ItemView {
     this.linkInput = null;
     this.nodeInput = null;
     this.autoToggle = null;
-    this.linkToggle = null;
     this.linkHoverSelect = null;
     this.externalToggle = null;
     this.externalModeSelect = null;
@@ -1318,7 +2462,24 @@ class MiniWorldMapView extends ItemView {
       attr: Object.assign({ type: "number", value: String(value) }, attr || {})
     });
     this.registerPanelControl(key, input);
-    input.addEventListener("change", () => onChange(input.value, input));
+    let commitTimer = null;
+    const commit = () => {
+      if (commitTimer) {
+        window.clearTimeout(commitTimer);
+        commitTimer = null;
+      }
+      const raw = String(input.value || "").trim();
+      if (!raw || raw === "-" || raw === ".") return;
+      onChange(input.value, input);
+    };
+    input.addEventListener("input", () => {
+      if (commitTimer) window.clearTimeout(commitTimer);
+      commitTimer = window.setTimeout(commit, 520);
+    });
+    input.addEventListener("change", commit);
+    input.addEventListener("keydown", evt => {
+      if (evt.key === "Enter") commit();
+    });
     return input;
   }
 
@@ -1378,13 +2539,6 @@ class MiniWorldMapView extends ItemView {
     );
   }
 
-  rememberHoverPinCandidate(index, graph) {
-    const candidate = this.currentHoverPinCandidate(index, graph);
-    if (!candidate) return;
-    this.lastHoverPinCandidate = candidate;
-    this.lastHoverPinCandidateExpiresAt = performance.now() + 15000;
-  }
-
   currentHoverPinCandidate(index, graph) {
     if (!index || !graph) return null;
     if (this.hoverNodeId !== null && this.hoverNodeId !== undefined) {
@@ -1392,6 +2546,16 @@ class MiniWorldMapView extends ItemView {
       return node ? this.createNodePinCandidate(node, this.state.hoverHighlightMode) : null;
     }
     if (this.hoverLink) return this.createLinkPinCandidate(index, graph, this.hoverLink);
+    return null;
+  }
+
+  currentSelectedPinCandidate(index, graph) {
+    if (!index || !graph) return null;
+    if (this.selectedLink) return this.createLinkPinCandidate(index, graph, this.selectedLink);
+    if (this.selectedNodeId !== null && this.selectedNodeId !== undefined) {
+      const node = graphNode(index, graph, this.selectedNodeId);
+      return node ? this.createNodePinCandidate(node, this.state.hoverHighlightMode) : null;
+    }
     return null;
   }
 
@@ -1420,28 +2584,8 @@ class MiniWorldMapView extends ItemView {
       target: edge.target,
       title: `${sourceTitle} -> ${targetTitle}`,
       path: `${sourcePath || "/"} -> ${targetPath || "/"}`,
-      mode: "note-links",
-      edge: Object.assign({}, edge)
+      mode: "note-links"
     };
-  }
-
-  validatePinCandidate(candidate, index, graph) {
-    if (!candidate) return null;
-    if (candidate.kind === "node") {
-      const node = graphNode(index, graph, candidate.nodeId);
-      return node ? this.createNodePinCandidate(node, candidate.mode) : null;
-    }
-    if (candidate.kind === "link" && candidate.source !== null && candidate.source !== undefined && candidate.target !== null && candidate.target !== undefined) {
-      const edge = this.findGraphEdgeForPin(candidate, graph) || candidate.edge || {
-        id: candidate.edgeId,
-        type: "visible-link",
-        source: candidate.source,
-        target: candidate.target,
-        weight: 1
-      };
-      return this.createLinkPinCandidate(index, graph, edge);
-    }
-    return null;
   }
 
   pinCandidateKey(candidate) {
@@ -1474,31 +2618,43 @@ class MiniWorldMapView extends ItemView {
   pinCurrentHoverPath() {
     const { index, graph } = this.lastCanvasBundle || {};
     if (!index || !graph) return;
+    const previousNeedsHoverLinks = this.needsCanvasHoverLinks();
     const freshCandidate = this.currentHoverPinCandidate(index, graph);
-    const cachedCandidate = performance.now() <= this.lastHoverPinCandidateExpiresAt
-      ? this.validatePinCandidate(this.lastHoverPinCandidate, index, graph)
-      : null;
-    const pin = this.addPinnedPath(freshCandidate || cachedCandidate);
+    const selectedCandidate = this.currentSelectedPinCandidate(index, graph);
+    const pin = this.addPinnedPath(selectedCandidate || freshCandidate);
     if (!pin) {
-      new Notice("Hover a path before pinning.");
+      new Notice("Select or hover a path before pinning.");
       return;
     }
-    this.state.sidePage = "pins";
-    this.render();
+    if (previousNeedsHoverLinks !== this.needsCanvasHoverLinks()) this.renderMapOnly();
+    else this.applyPersistentHighlight();
+    if (!this.state.fullscreen && this.state.sidePage === "pins" && this.lastCanvasBundle) {
+      this.renderSidePanel(this.lastCanvasBundle.index, this.lastCanvasBundle.graph);
+    }
   }
 
   removePinnedPath(pinId) {
+    const previousNeedsHoverLinks = this.needsCanvasHoverLinks();
     this.pinnedPaths = this.pinnedPaths.filter(pin => pin.id !== pinId);
     this.selectedPinIds.delete(pinId);
     this.dropEmptyPinGroups();
-    this.render();
+    if (previousNeedsHoverLinks !== this.needsCanvasHoverLinks()) this.renderMapOnly();
+    else this.requestCanvasDraw("full");
+    if (!this.state.fullscreen && this.state.sidePage === "pins" && this.lastCanvasBundle) {
+      this.renderSidePanel(this.lastCanvasBundle.index, this.lastCanvasBundle.graph);
+    }
   }
 
   clearPinnedPaths() {
+    const previousNeedsHoverLinks = this.needsCanvasHoverLinks();
     this.pinnedPaths = [];
     this.pinGroups = [];
     this.selectedPinIds.clear();
-    this.render();
+    if (previousNeedsHoverLinks !== this.needsCanvasHoverLinks()) this.renderMapOnly();
+    else this.requestCanvasDraw("full");
+    if (!this.state.fullscreen && this.state.sidePage === "pins" && this.lastCanvasBundle) {
+      this.renderSidePanel(this.lastCanvasBundle.index, this.lastCanvasBundle.graph);
+    }
   }
 
   groupSelectedPinnedPaths() {
@@ -1612,7 +2768,7 @@ class MiniWorldMapView extends ItemView {
     }
 
     this.state.sidePage = "inspect";
-    this.selectedLink = this.findGraphEdgeForPin(pin, graph) || pin.edge || null;
+    this.selectedLink = this.findGraphEdgeForPin(pin, graph) || null;
     this.selectedNodeId = null;
     this.applyPersistentHighlight();
     if (!this.state.fullscreen) this.renderSidePanel(index, graph);
@@ -1635,8 +2791,9 @@ class MiniWorldMapView extends ItemView {
     return Array.from(ids);
   }
 
-  render() {
+  render(options = {}) {
     this.syncColorSchemeClass();
+    const preservePanel = Boolean(options.preservePanel);
     const index = this.plugin.index;
     if (!index.ready) {
       this.graphHost.empty();
@@ -1655,7 +2812,6 @@ class MiniWorldMapView extends ItemView {
     if (this.linkInput) this.linkInput.value = String(this.state.linkLimit);
     if (this.nodeInput) this.nodeInput.value = String(this.state.nodeLimit);
     if (this.autoToggle) this.autoToggle.checked = this.state.autoDetail;
-    if (this.linkToggle) this.linkToggle.checked = this.state.showLinkOverlay;
     if (this.linkHoverSelect) this.linkHoverSelect.value = normalizeHoverHighlightMode(this.state.hoverHighlightMode);
     if (this.externalToggle) this.externalToggle.checked = this.state.showExternalLinks;
     if (this.externalModeSelect) this.externalModeSelect.value = this.state.externalDetailMode;
@@ -1684,7 +2840,7 @@ class MiniWorldMapView extends ItemView {
     this.positions = layout.positions;
 
     this.renderGraph(index, graph, layout);
-    if (!this.state.fullscreen) this.renderSidePanel(index, graph);
+    if (!this.state.fullscreen && !preservePanel) this.renderSidePanel(index, graph);
     this.lastRenderMs = Math.round(performance.now() - started);
     this.renderMeta(index, graph, layout);
     this.maybeAutoTune(index, graph, this.lastRenderMs);
@@ -1730,11 +2886,18 @@ class MiniWorldMapView extends ItemView {
     }
   }
 
-  scheduleRender(delay = 80) {
+  renderMapOnly() {
+    this.render({ preservePanel: true });
+  }
+
+  scheduleRender(delay = 80, options = {}) {
     if (this.renderTimer) window.clearTimeout(this.renderTimer);
+    this.pendingRenderOptions = Object.assign({}, this.pendingRenderOptions || {}, options || {});
     this.renderTimer = window.setTimeout(() => {
       this.renderTimer = null;
-      this.render();
+      const renderOptions = this.pendingRenderOptions || {};
+      this.pendingRenderOptions = null;
+      this.render(renderOptions);
     }, delay);
   }
 
@@ -1780,9 +2943,6 @@ class MiniWorldMapView extends ItemView {
     this.syncColorSchemeClass();
     this.canvasPalette = this.readCanvasPalette();
     this.requestCanvasDraw("full");
-    if (!this.state.fullscreen && this.lastCanvasBundle) {
-      this.renderSidePanel(this.lastCanvasBundle.index, this.lastCanvasBundle.graph);
-    }
     if (persist) {
       for (const leaf of this.plugin.app.workspace.getLeavesOfType(VIEW_TYPE_MINI_WORLD_MAP)) {
         const view = leaf.view;
@@ -1796,6 +2956,119 @@ class MiniWorldMapView extends ItemView {
 
   cycleColorScheme() {
     this.setColorScheme(nextColorScheme(this.state.colorScheme));
+  }
+
+  applyPluginSettings(keys, options = {}) {
+    const settingKeys = new Set(Array.isArray(keys) ? keys : [keys].filter(Boolean));
+    if (!settingKeys.size) return;
+
+    const settings = this.plugin.settings;
+    const previousNeedsHoverLinks = this.needsCanvasHoverLinks();
+    const previousSwirl = this.state.swirlStrength;
+    let needsRender = false;
+    let needsDraw = false;
+    let needsPanel = false;
+
+    const applyBudgetSetting = () => {
+      this.disableAutoDetail();
+      this.disableCompleteRoot();
+      needsRender = true;
+    };
+    const applyStructuralSetting = () => {
+      this.disableCompleteRoot();
+      needsRender = true;
+    };
+
+    if (settingKeys.has("atlasDepth")) {
+      this.state.atlasDepth = clampNumber(settings.atlasDepth, 1, MAX_ATLAS_DEPTH, DEFAULT_SETTINGS.atlasDepth);
+      applyBudgetSetting();
+    }
+    if (settingKeys.has("renderNodeLimit")) {
+      this.state.nodeLimit = clampNumber(settings.renderNodeLimit, 200, MAX_RENDER_NODE_LIMIT, DEFAULT_SETTINGS.renderNodeLimit);
+      applyBudgetSetting();
+    }
+    if (settingKeys.has("linkLimit")) {
+      this.state.linkLimit = clampNumber(settings.linkLimit, 0, MAX_LINK_LIMIT, DEFAULT_SETTINGS.linkLimit);
+      applyBudgetSetting();
+    }
+    if (settingKeys.has("externalLinkAnchorLimit")) {
+      this.state.externalLinkAnchorLimit = clampNumber(
+        settings.externalLinkAnchorLimit,
+        0,
+        MAX_EXTERNAL_LINK_ANCHOR_LIMIT,
+        DEFAULT_SETTINGS.externalLinkAnchorLimit
+      );
+      applyBudgetSetting();
+    }
+    if (settingKeys.has("adaptiveDetail")) {
+      this.state.autoDetail = Boolean(settings.adaptiveDetail);
+      if (this.state.autoDetail) this.disableCompleteRoot();
+      this.adaptiveInitialized = false;
+      this.autoTuneCount = 0;
+      needsRender = true;
+    }
+    if (settingKeys.has("hoverHighlightMode")) {
+      this.state.hoverHighlightMode = normalizeHoverHighlightMode(settings.hoverHighlightMode);
+      this.state.enableLinkHover = hoverHighlightsNoteLinks(this.state.hoverHighlightMode);
+      this.hoverLink = null;
+      if (previousNeedsHoverLinks !== this.needsCanvasHoverLinks()) needsRender = true;
+      else needsDraw = true;
+    }
+    if (settingKeys.has("showExternalLinks")) {
+      this.state.showExternalLinks = Boolean(settings.showExternalLinks);
+      applyStructuralSetting();
+    }
+    if (settingKeys.has("externalDetailMode")) {
+      this.state.externalDetailMode = settings.externalDetailMode || DEFAULT_SETTINGS.externalDetailMode;
+      this.resetAdaptiveTuning();
+      applyStructuralSetting();
+    }
+    if (settingKeys.has("labelVisibility")) {
+      this.state.labelVisibility = normalizeLabelVisibility(settings.labelVisibility);
+      needsDraw = true;
+    }
+    if (settingKeys.has("swirlStrength")) {
+      this.state.swirlStrength = clampNumber(settings.swirlStrength, 0, MAX_SWIRL_STRENGTH, DEFAULT_SWIRL_STRENGTH);
+      if ((previousSwirl > 0) !== (this.state.swirlStrength > 0)) {
+        if (this.state.swirlStrength > 0) this.startCanvasSwirlAnimation();
+        else {
+          this.cancelCanvasSwirlAnimation();
+          this.resetCanvasSwirlPositions();
+        }
+        needsRender = true;
+      } else {
+        needsDraw = true;
+      }
+    }
+    if (settingKeys.has("colorScheme")) {
+      this.state.colorScheme = normalizeColorScheme(settings.colorScheme);
+      this.syncColorSchemeClass();
+      this.canvasPalette = this.readCanvasPalette();
+      needsDraw = true;
+    }
+    if (settingKeys.has("hiddenLegendItems")) {
+      this.state.hiddenLegendItems = Array.isArray(settings.hiddenLegendItems)
+        ? settings.hiddenLegendItems.slice()
+        : DEFAULT_SETTINGS.hiddenLegendItems.slice();
+      needsRender = true;
+    }
+    if (settingKeys.has("includeUnresolvedLinks") || settingKeys.has("ignoreFolders")) {
+      needsRender = true;
+      this.viewInitialized = false;
+    }
+
+    if (options.resetViewport) this.viewInitialized = false;
+    if (options.render === false) return;
+
+    if (needsRender) {
+      this.render({ preservePanel: options.preservePanel === true });
+      return;
+    }
+
+    if (needsDraw) this.requestCanvasDraw("full");
+    if ((needsDraw || needsPanel) && options.preservePanel !== true && !this.state.fullscreen && this.lastCanvasBundle) {
+      this.renderSidePanel(this.lastCanvasBundle.index, this.lastCanvasBundle.graph);
+    }
   }
 
   disableCompleteRoot() {
@@ -1947,15 +3220,6 @@ class MiniWorldMapView extends ItemView {
     if (pressure < 9000 && graph.externalFileCount < 520) return false;
 
     let changed = false;
-    if (this.state.externalDetailMode === "exact" && graph.externalFileCount > 480) {
-      this.state.externalDetailMode = "selected";
-      changed = true;
-    }
-    const hasSelectedNode = this.selectedNodeId !== null && this.selectedNodeId !== undefined;
-    if (this.state.externalDetailMode === "selected" && !hasSelectedNode && !this.selectedLink && graph.externalFileCount > 0) {
-      this.state.externalDetailMode = "grouped";
-      changed = true;
-    }
     if (this.state.externalLinkAnchorLimit > 260) {
       this.state.externalLinkAnchorLimit = Math.max(220, Math.floor(this.state.externalLinkAnchorLimit * 0.72));
       changed = true;
@@ -2006,9 +3270,6 @@ class MiniWorldMapView extends ItemView {
       this.state.linkLimit = Math.max(520, Math.floor(this.state.linkLimit * 0.76));
       this.state.nodeLimit = Math.max(2100, Math.floor(this.state.nodeLimit * 0.8));
       this.state.externalLinkAnchorLimit = Math.max(220, Math.floor(this.state.externalLinkAnchorLimit * 0.74));
-      if (this.state.externalDetailMode === "exact" && (elapsedMs > 420 || graph.externalFileCount > 480)) {
-        this.state.externalDetailMode = "selected";
-      }
       if ((elapsedMs > 850 || pressure > 15000) && this.state.atlasDepth > 3) this.state.atlasDepth -= 1;
       changed = true;
     } else if (veryLight) {
@@ -2035,8 +3296,11 @@ class MiniWorldMapView extends ItemView {
   }
 
   renderGraph(index, graph, layout) {
+    this.cancelCanvasPanMomentum();
+    this.cancelCanvasZoomAnimation();
     this.cancelCanvasSpringBack();
     this.cancelCanvasSwirlAnimation();
+    this.destroyPixiRenderer();
     this.graphHost.empty();
     this.graphHost.classList.remove("is-hovering");
     this.graphHost.classList.remove("is-panning");
@@ -2048,14 +3312,17 @@ class MiniWorldMapView extends ItemView {
     this.hoverNodeId = null;
     this.hoverLink = null;
 
-    const canvas = this.graphHost.createEl("canvas", {
-      cls: "mwm-canvas",
-      attr: {
-        role: "img",
-        "aria-label": "Mini World Map graph",
-        tabindex: "0"
-      }
-    });
+    const pixiRenderer = this.createPixiRenderer();
+    const canvas = pixiRenderer
+      ? pixiRenderer.view
+      : this.graphHost.createEl("canvas", {
+        cls: "mwm-canvas",
+        attr: {
+          role: "img",
+          "aria-label": "Mini World Map graph",
+          tabindex: "0"
+        }
+      });
     this.canvas = canvas;
     this.renderFloatingCanvasControls();
     this.renderFloatingThemeButton();
@@ -2068,7 +3335,10 @@ class MiniWorldMapView extends ItemView {
       layout,
       query,
       this.plugin.nativeGraphSettings || DEFAULT_NATIVE_GRAPH_SETTINGS,
-      { includeHoverLinks: this.needsCanvasHoverLinks() }
+      {
+        includeHoverLinks: this.needsCanvasHoverLinks(),
+        hiddenLegendItems: this.state.hiddenLegendItems
+      }
     );
     this.lastCanvasBundle = { index, graph, layout };
 
@@ -2080,7 +3350,8 @@ class MiniWorldMapView extends ItemView {
     const maxZoom = this.canvasMaxZoom(viewport, layout);
     const requestedWholeMap = this.state.zoom <= minZoom + 0.0005;
     this.state.zoom = clampFloat(this.state.zoom, minZoom, maxZoom, 1);
-    this.sizeCanvasToViewport(canvas, viewport);
+    if (pixiRenderer) pixiRenderer.resize(viewport);
+    else this.sizeCanvasToViewport(canvas, viewport);
     const signature = [
       graph.rootId,
       graph.focusId || "",
@@ -2110,6 +3381,32 @@ class MiniWorldMapView extends ItemView {
     this.installCanvasEvents(canvas);
     this.drawCanvasGraph();
     this.startCanvasSwirlAnimation();
+  }
+
+  createPixiRenderer() {
+    if (this.pixiUnavailable) return null;
+    const PIXI = loadMiniWorldMapPixiRuntime();
+    if (!PIXI) {
+      this.pixiUnavailable = true;
+      console.warn("Mini World Map Pixi renderer unavailable; falling back to 2D canvas.");
+      return null;
+    }
+    try {
+      this.pixiRenderer = new MiniWorldMapPixiRenderer(this.graphHost, PIXI);
+      return this.pixiRenderer;
+    } catch (error) {
+      this.pixiUnavailable = true;
+      console.error("Mini World Map failed to create Pixi renderer; falling back to 2D canvas.", error);
+      this.destroyPixiRenderer();
+      return null;
+    }
+  }
+
+  destroyPixiRenderer() {
+    if (this.pixiRenderer) {
+      this.pixiRenderer.destroy();
+      this.pixiRenderer = null;
+    }
   }
 
   renderFloatingThemeButton() {
@@ -2293,6 +3590,8 @@ class MiniWorldMapView extends ItemView {
   installCanvasEvents(canvas) {
     canvas.addEventListener("pointerdown", evt => {
       if (evt.button !== 0) return;
+      this.cancelCanvasPanMomentum();
+      this.cancelCanvasZoomAnimation();
       this.cancelCanvasSpringBack();
       const point = this.canvasEventPoint(evt);
       const hit = this.hitTestCanvas(point);
@@ -2316,7 +3615,6 @@ class MiniWorldMapView extends ItemView {
         canvas.setPointerCapture?.(evt.pointerId);
         this.hoverNodeId = hit.node.node.id;
         this.hoverLink = null;
-        this.rememberHoverPinCandidate(this.lastCanvasBundle?.index, this.lastCanvasBundle?.graph);
         this.graphHost.classList.add("is-panning", "is-pointing");
         this.requestCanvasDraw("interactive");
         return;
@@ -2329,6 +3627,11 @@ class MiniWorldMapView extends ItemView {
         startClientY: evt.clientY,
         startPanX: this.canvasPanX,
         startPanY: this.canvasPanY,
+        lastClientX: evt.clientX,
+        lastClientY: evt.clientY,
+        lastMoveAt: performance.now(),
+        velocityX: 0,
+        velocityY: 0,
         moved: false,
         suppressClick: false
       };
@@ -2369,6 +3672,15 @@ class MiniWorldMapView extends ItemView {
 
         this.canvasPanX = this.dragState.startPanX + dx;
         this.canvasPanY = this.dragState.startPanY + dy;
+        const now = performance.now();
+        const dt = Math.max(1, now - (this.dragState.lastMoveAt || now));
+        const stepX = evt.clientX - (this.dragState.lastClientX ?? evt.clientX);
+        const stepY = evt.clientY - (this.dragState.lastClientY ?? evt.clientY);
+        this.dragState.velocityX = this.dragState.velocityX * 0.45 + (stepX / dt) * 0.55;
+        this.dragState.velocityY = this.dragState.velocityY * 0.45 + (stepY / dt) * 0.55;
+        this.dragState.lastClientX = evt.clientX;
+        this.dragState.lastClientY = evt.clientY;
+        this.dragState.lastMoveAt = now;
         this.saveViewportState();
         this.requestCanvasDraw("interactive");
         return;
@@ -2379,6 +3691,9 @@ class MiniWorldMapView extends ItemView {
     canvas.addEventListener("pointerup", evt => {
       const wasDragging = Boolean(this.dragState && this.dragState.suppressClick);
       const draggedNodeId = this.dragState && this.dragState.mode === "node" ? this.dragState.nodeId : null;
+      const panVelocity = this.dragState && this.dragState.mode === "pan"
+        ? { x: this.dragState.velocityX || 0, y: this.dragState.velocityY || 0 }
+        : null;
       canvas.releasePointerCapture?.(evt.pointerId);
       this.dragState = null;
       this.graphHost.classList.remove("is-panning");
@@ -2388,7 +3703,11 @@ class MiniWorldMapView extends ItemView {
         return;
       }
       if (wasDragging) {
-        this.requestCanvasDraw("full");
+        if (panVelocity) {
+          this.startCanvasPanMomentum(panVelocity.x, panVelocity.y);
+        } else {
+          this.requestCanvasDraw("full");
+        }
         return;
       }
       if (!wasDragging) this.activateCanvasAt(this.canvasEventPoint(evt), evt);
@@ -2461,6 +3780,58 @@ class MiniWorldMapView extends ItemView {
       this.updateCanvasPointPolar(other.point);
       moved.add(otherId);
     }
+  }
+
+  startCanvasPanMomentum(velocityX, velocityY) {
+    this.cancelCanvasPanMomentum();
+    const speed = Math.hypot(velocityX, velocityY);
+    if (!this.canvas || !this.canvasData || speed < 0.06) {
+      this.requestCanvasDraw("full");
+      return;
+    }
+
+    this.canvasPanVelocityX = clampFloat(velocityX, -2.2, 2.2, 0);
+    this.canvasPanVelocityY = clampFloat(velocityY, -2.2, 2.2, 0);
+    let lastFrameAt = performance.now();
+
+    const tick = now => {
+      this.canvasPanAnimationFrame = null;
+      if (!this.canvas || !this.canvasData || this.dragState) {
+        this.canvasPanVelocityX = 0;
+        this.canvasPanVelocityY = 0;
+        return;
+      }
+
+      const dt = clampFloat(now - lastFrameAt, 1, 40, 16);
+      lastFrameAt = now;
+      this.canvasPanX += this.canvasPanVelocityX * dt;
+      this.canvasPanY += this.canvasPanVelocityY * dt;
+      const friction = Math.exp(-dt / 185);
+      this.canvasPanVelocityX *= friction;
+      this.canvasPanVelocityY *= friction;
+      this.saveViewportState();
+      this.requestCanvasDraw("interactive");
+
+      if (Math.hypot(this.canvasPanVelocityX, this.canvasPanVelocityY) < 0.018) {
+        this.canvasPanVelocityX = 0;
+        this.canvasPanVelocityY = 0;
+        this.requestCanvasDraw("full");
+        return;
+      }
+
+      this.canvasPanAnimationFrame = window.requestAnimationFrame(tick);
+    };
+
+    this.canvasPanAnimationFrame = window.requestAnimationFrame(tick);
+  }
+
+  cancelCanvasPanMomentum() {
+    if (this.canvasPanAnimationFrame) {
+      window.cancelAnimationFrame(this.canvasPanAnimationFrame);
+      this.canvasPanAnimationFrame = null;
+    }
+    this.canvasPanVelocityX = 0;
+    this.canvasPanVelocityY = 0;
   }
 
   resolveCanvasNodeOverlapsAround(nodeId, iterations = 3) {
@@ -2604,14 +3975,79 @@ class MiniWorldMapView extends ItemView {
     };
   }
 
-  zoomAtClientPoint(clientX, clientY, direction) {
+  zoomAtClientPoint(clientX, clientY, deltaY, deltaMode = 0) {
     const point = this.canvas ? this.canvasEventPoint({ clientX, clientY }) : null;
     const viewport = this.canvasViewport();
     const minZoom = this.canvasMinZoom(viewport);
     const maxZoom = this.canvasMaxZoom(viewport);
     const previousZoom = clampFloat(this.state.zoom, minZoom, maxZoom, 1);
-    const factor = Math.pow(ZOOM_WHEEL_STEP, direction > 0 ? 1 : -1);
-    this.setCanvasZoom(previousZoom * factor, point, true);
+    const normalizedDelta = normalizeWheelDeltaY(deltaY, deltaMode);
+    const factor = Math.pow(ZOOM_WHEEL_BASE, -normalizedDelta / 120);
+    const baseZoom = Number.isFinite(this.canvasTargetZoom) ? this.canvasTargetZoom : previousZoom;
+    this.startCanvasZoomAnimation(baseZoom * factor, point);
+  }
+
+  startCanvasZoomAnimation(nextZoom, anchorPoint = null) {
+    const viewport = this.canvasViewport();
+    const minZoom = this.canvasMinZoom(viewport);
+    const maxZoom = this.canvasMaxZoom(viewport);
+    this.canvasTargetZoom = clampFloat(nextZoom, minZoom, maxZoom, this.state.zoom);
+    this.canvasZoomAnchorPoint = anchorPoint || { x: viewport.width / 2, y: viewport.height / 2 };
+    this.canvasInteractionUntil = performance.now() + 180;
+    if (!this.canvasZoomAnimationFrame) {
+      this.canvasZoomAnimationFrame = window.requestAnimationFrame(() => this.stepCanvasZoomAnimation());
+    }
+  }
+
+  stepCanvasZoomAnimation() {
+    this.canvasZoomAnimationFrame = null;
+    if (!this.canvas || !this.lastCanvasBundle || !Number.isFinite(this.canvasTargetZoom)) {
+      this.canvasTargetZoom = null;
+      this.canvasZoomAnchorPoint = null;
+      return;
+    }
+
+    const viewport = this.canvasViewport();
+    const minZoom = this.canvasMinZoom(viewport);
+    const maxZoom = this.canvasMaxZoom(viewport);
+    const previousZoom = clampFloat(this.state.zoom, minZoom, maxZoom, 1);
+    const targetZoom = clampFloat(this.canvasTargetZoom, minZoom, maxZoom, previousZoom);
+    const zoomDelta = (previousZoom > targetZoom ? previousZoom / targetZoom : targetZoom / previousZoom) - 1;
+    const done = zoomDelta < 0.006;
+    const zoom = done
+      ? targetZoom
+      : previousZoom * ZOOM_ANIMATION_FRICTION + targetZoom * (1 - ZOOM_ANIMATION_FRICTION);
+    const point = this.canvasZoomAnchorPoint || { x: viewport.width / 2, y: viewport.height / 2 };
+    const world = {
+      x: (point.x - this.canvasPanX) / previousZoom,
+      y: (point.y - this.canvasPanY) / previousZoom
+    };
+
+    this.state.zoom = clampFloat(zoom, minZoom, maxZoom, previousZoom);
+    this.canvasPanX = point.x - world.x * this.state.zoom;
+    this.canvasPanY = point.y - world.y * this.state.zoom;
+    if (done) this.syncZoomControls();
+    this.saveViewportState();
+    this.canvasInteractionUntil = performance.now() + 120;
+    this.drawCanvasGraph({ mode: "interactive" });
+
+    if (done) {
+      this.canvasTargetZoom = null;
+      this.canvasZoomAnchorPoint = null;
+      this.scheduleSettledCanvasDraw(120);
+      return;
+    }
+
+    this.canvasZoomAnimationFrame = window.requestAnimationFrame(() => this.stepCanvasZoomAnimation());
+  }
+
+  cancelCanvasZoomAnimation() {
+    if (this.canvasZoomAnimationFrame) {
+      window.cancelAnimationFrame(this.canvasZoomAnimationFrame);
+      this.canvasZoomAnimationFrame = null;
+    }
+    this.canvasTargetZoom = null;
+    this.canvasZoomAnchorPoint = null;
   }
 
   syncZoomControls() {
@@ -2628,6 +4064,7 @@ class MiniWorldMapView extends ItemView {
   }
 
   setCanvasZoom(nextZoom, anchorPoint = null, redraw = true) {
+    this.cancelCanvasZoomAnimation();
     const viewport = this.canvasViewport();
     const minZoom = this.canvasMinZoom(viewport);
     const maxZoom = this.canvasMaxZoom(viewport);
@@ -2670,10 +4107,6 @@ class MiniWorldMapView extends ItemView {
     this.hoverLink = hasNodeHover ? null : nextLink;
     this.graphHost.classList.toggle("is-hovering", hasNodeHover || Boolean(this.hoverLink));
     this.graphHost.classList.toggle("is-pointing", hasNodeHover || Boolean(this.hoverLink));
-    if (hasNodeHover || this.hoverLink) {
-      const { index, graph } = this.lastCanvasBundle || {};
-      this.rememberHoverPinCandidate(index, graph);
-    }
     if (this.canvasNeedsFastDraw()) {
       this.requestCanvasDraw("interactive");
       this.scheduleSettledCanvasDraw(180);
@@ -2738,9 +4171,9 @@ class MiniWorldMapView extends ItemView {
   drawCanvasGraph(options = {}) {
     if (!this.canvas || !this.canvasData || !this.lastCanvasBundle) return;
     const viewport = this.canvasViewport();
-    this.sizeCanvasToViewport(this.canvas, viewport);
+    if (this.pixiRenderer) this.pixiRenderer.resize(viewport);
+    else this.sizeCanvasToViewport(this.canvas, viewport);
 
-    const ctx = this.canvas.getContext("2d");
     const palette = this.canvasPalette || this.readCanvasPalette();
     const zoom = clampFloat(this.state.zoom, this.canvasMinZoom(viewport), this.canvasMaxZoom(viewport), 1);
     const frameTime = Number.isFinite(options.now) ? options.now : performance.now();
@@ -2748,9 +4181,77 @@ class MiniWorldMapView extends ItemView {
     const active = this.canvasActiveState();
     const mode = options.mode || (this.dragState || performance.now() < this.canvasInteractionUntil ? "interactive" : "full");
     const interactive = mode === "interactive";
+    const activeKey = this.canvasActiveStateKey(active);
+    const geometryDirty = Boolean(
+      (this.dragState && this.dragState.mode === "node")
+      || this.canvasSpringState
+      || this.canvasSwirlMotionActive()
+    );
+    if (
+      this.pixiRenderer
+      && interactive
+      && !geometryDirty
+      && this.pixiRenderer.transformOnly({
+        data: this.canvasData,
+        bundle: this.lastCanvasBundle,
+        palette,
+        active,
+        activeKey,
+        viewport,
+        panX: this.canvasPanX,
+        panY: this.canvasPanY,
+        zoom,
+        geometryDirty,
+        selectedNodeId: this.selectedNodeId,
+        labelVisibility: this.state.labelVisibility,
+        mode,
+        now: frameTime,
+        allowZoomTransformOnly: true
+      })
+    ) {
+      return;
+    }
+
+    if (this.pixiRenderer) {
+      if (geometryDirty) {
+        this.updateCanvasDynamicLinkRoutes({
+          enabled: this.canvasSwirlMotionActive(),
+          includeBaseLinks: true,
+          highlightedHoverLinks: []
+        });
+      }
+      if (this.lastCanvasBundle?.layout) {
+        this.lastCanvasBundle.layout.spinStartedAt = this.canvasSwirlStartedAt || 0;
+        this.lastCanvasBundle.layout.spinSpeed = this.canvasSwirlAmount();
+      }
+      this.pixiRenderer.render({
+        data: this.canvasData,
+        bundle: this.lastCanvasBundle,
+        palette,
+        active,
+        activeKey,
+        viewport,
+        panX: this.canvasPanX,
+        panY: this.canvasPanY,
+        zoom,
+        mode,
+        geometryDirty,
+        selectedNodeId: this.selectedNodeId,
+        labelVisibility: this.state.labelVisibility,
+        now: frameTime
+      });
+      return;
+    }
+
     const fastInteractive = interactive && this.canvasNeedsFastDraw();
     const visuals = this.updateCanvasVisualState(active, zoom, { immediate: interactive });
-    const bounds = canvasWorldBounds(viewport, this.canvasPanX, this.canvasPanY, zoom, interactive ? 120 : 220);
+    const bounds = canvasWorldBounds(
+      viewport,
+      this.canvasPanX,
+      this.canvasPanY,
+      zoom,
+      this.pixiRenderer ? (interactive ? 900 : 520) : (interactive ? 120 : 220)
+    );
     const highlightedHoverLinks = active.highlightedEdges.size
       ? Array.from(active.highlightedEdges)
         .map(key => this.canvasData.edgesById.get(key))
@@ -2762,6 +4263,7 @@ class MiniWorldMapView extends ItemView {
       highlightedHoverLinks
     });
 
+    const ctx = this.canvas.getContext("2d");
     ctx.setTransform(this.canvasDpr, 0, 0, this.canvasDpr, 0, 0);
     ctx.clearRect(0, 0, viewport.width, viewport.height);
     this.drawCanvasBackground(ctx, palette, viewport);
@@ -2779,6 +4281,25 @@ class MiniWorldMapView extends ItemView {
     this.drawCanvasNodes(ctx, this.canvasData.nodes, visuals, palette, zoom, { bounds, interactive });
     this.drawCanvasLabels(ctx, this.canvasData.nodes, visuals, palette, zoom, { bounds, interactive, fastInteractive });
     ctx.restore();
+  }
+
+  canvasActiveStateKey(active) {
+    if (!active) return "";
+    return [
+      active.hasActive ? 1 : 0,
+      active.activeNodeId || "",
+      active.activeLinkId || "",
+      this.selectedNodeId || "",
+      this.selectedLink?.id || "",
+      this.hoverNodeId || "",
+      this.hoverLink?.id || "",
+      active.relatedNodes?.size || 0,
+      active.highlightedEdges?.size || 0,
+      active.labelNodes?.size || 0,
+      active.pinnedNodeIds?.size || 0,
+      this.pinnedPaths.length,
+      normalizeLabelVisibility(this.state.labelVisibility)
+    ].join("|");
   }
 
   canvasNeedsFastDraw() {
@@ -2819,7 +4340,7 @@ class MiniWorldMapView extends ItemView {
     }
 
     const crossedZero = (previous > 0) !== (next > 0);
-    if (options.render || crossedZero) this.scheduleRender(options.render ? 0 : 140);
+    if (options.render || crossedZero) this.scheduleRender(options.render ? 0 : 140, { preservePanel: true });
   }
 
   startCanvasSwirlAnimation() {
@@ -2959,9 +4480,16 @@ class MiniWorldMapView extends ItemView {
     const data = this.canvasData;
     const rawActiveNodeId = this.hoverNodeId ?? this.selectedNodeId ?? null;
     const hoverMode = normalizeHoverHighlightMode(this.state.hoverHighlightMode);
-    let activeNodeId = this.plugin.index.visualNodeId(rawActiveNodeId);
+    const resolveCanvasNodeId = nodeId => {
+      if (nodeId === null || nodeId === undefined) return null;
+      if (data.nodesById.has(nodeId)) return nodeId;
+      const visualNodeId = this.plugin.index.visualNodeId(nodeId);
+      return visualNodeId !== null && visualNodeId !== undefined && data.nodesById.has(visualNodeId)
+        ? visualNodeId
+        : null;
+    };
+    let activeNodeId = resolveCanvasNodeId(rawActiveNodeId);
     let activeLinkId = this.hoverLink?.id || this.selectedLink?.id || null;
-    if (activeNodeId !== null && activeNodeId !== undefined && !data.nodesById.has(activeNodeId)) activeNodeId = null;
     if (activeLinkId && !data.edgesById.has(activeLinkId)) activeLinkId = null;
     const relatedNodes = new Set();
     const highlightedEdges = new Set();
@@ -2971,8 +4499,7 @@ class MiniWorldMapView extends ItemView {
     let hasActiveLink = false;
 
     const addNodeHighlight = (nodeId, mode, pinned = false) => {
-      let visualNodeId = this.plugin.index.visualNodeId(nodeId);
-      if (visualNodeId !== null && visualNodeId !== undefined && !data.nodesById.has(visualNodeId)) visualNodeId = null;
+      const visualNodeId = resolveCanvasNodeId(nodeId);
       if (visualNodeId === null || visualNodeId === undefined) return null;
       relatedNodes.add(visualNodeId);
       labelNodes.add(visualNodeId);
@@ -3027,7 +4554,7 @@ class MiniWorldMapView extends ItemView {
       if (pin.kind === "node") {
         if (addNodeHighlight(pin.nodeId, pin.mode, true) !== null) hasPinnedActive = true;
       } else if (pin.kind === "link") {
-        if (addLinkHighlight(pin.edgeId, pin.edge || pin) !== null) hasPinnedActive = true;
+        if (addLinkHighlight(pin.edgeId, pin) !== null) hasPinnedActive = true;
       }
     }
 
@@ -3522,6 +5049,7 @@ class MiniWorldMapView extends ItemView {
   }
 
   adjustZoom(delta, rerender = true) {
+    this.cancelCanvasZoomAnimation();
     const viewport = this.canvasViewport();
     const minZoom = this.canvasMinZoom(viewport);
     const maxZoom = this.canvasMaxZoom(viewport);
@@ -3545,6 +5073,7 @@ class MiniWorldMapView extends ItemView {
   }
 
   fitToView() {
+    this.cancelCanvasZoomAnimation();
     if (!this.lastLayout || !this.graphHost) return;
     const viewport = this.canvasViewport();
     this.state.zoom = clampFloat(
@@ -3559,6 +5088,13 @@ class MiniWorldMapView extends ItemView {
       this.requestCanvasDraw("full");
       return;
     }
+    this.render();
+  }
+
+  resetViewZoom() {
+    this.cancelCanvasZoomAnimation();
+    this.viewInitialized = false;
+    this.state.zoom = 1;
     this.render();
   }
 
@@ -3734,7 +5270,7 @@ class MiniWorldMapView extends ItemView {
       value => {
         this.disableCompleteRoot();
         this.state.search = value.trim();
-        this.scheduleRender(120);
+        this.scheduleRender(120, { preservePanel: true });
       }
     );
 
@@ -3935,7 +5471,7 @@ class MiniWorldMapView extends ItemView {
         this.disableAutoDetail();
         this.disableCompleteRoot();
         this.state.atlasDepth = clampNumber(value, 1, MAX_ATLAS_DEPTH, this.plugin.settings.atlasDepth);
-        this.render();
+        this.renderMapOnly();
       }
     );
     this.nodeInput = this.createPanelNumber(
@@ -3948,7 +5484,7 @@ class MiniWorldMapView extends ItemView {
         this.disableAutoDetail();
         this.disableCompleteRoot();
         this.state.nodeLimit = clampNumber(value, 200, MAX_RENDER_NODE_LIMIT, this.plugin.settings.renderNodeLimit);
-        this.render();
+        this.renderMapOnly();
       }
     );
     this.linkInput = this.createPanelNumber(
@@ -3961,7 +5497,7 @@ class MiniWorldMapView extends ItemView {
         this.disableAutoDetail();
         this.disableCompleteRoot();
         this.state.linkLimit = clampNumber(value, 0, MAX_LINK_LIMIT, this.plugin.settings.linkLimit);
-        this.render();
+        this.renderMapOnly();
       }
     );
 
@@ -3971,7 +5507,7 @@ class MiniWorldMapView extends ItemView {
       if (this.state.autoDetail) this.disableCompleteRoot();
       this.adaptiveInitialized = false;
       this.autoTuneCount = 0;
-      this.render();
+      this.renderMapOnly();
     });
   }
 
@@ -3980,11 +5516,6 @@ class MiniWorldMapView extends ItemView {
     this.createPanelPageTitle(panel, "Links");
 
     const overlays = this.createPanelSection(panel, "Overlay");
-    this.linkToggle = this.createPanelToggle(overlays, "show-link-overlay", "Show link overlay", this.state.showLinkOverlay, checked => {
-      this.disableCompleteRoot();
-      this.state.showLinkOverlay = checked;
-      this.render();
-    });
     this.linkHoverSelect = this.createPanelSelect(
       overlays,
       "hover-highlight-mode",
@@ -3996,16 +5527,17 @@ class MiniWorldMapView extends ItemView {
         this.state.hoverHighlightMode = normalizeHoverHighlightMode(value);
         this.state.enableLinkHover = hoverHighlightsNoteLinks(this.state.hoverHighlightMode);
         this.hoverLink = null;
-        if (previousUsesHoverLinks !== this.state.enableLinkHover) this.render();
+        if (previousUsesHoverLinks !== this.state.enableLinkHover) this.renderMapOnly();
         else this.applyPersistentHighlight();
       }
     );
 
     const external = this.createPanelSection(panel, "Outside Root");
     this.externalToggle = this.createPanelToggle(external, "show-external-links", "Show external links", this.state.showExternalLinks, checked => {
+      this.disableAutoDetail();
       this.disableCompleteRoot();
       this.state.showExternalLinks = checked;
-      this.render();
+      this.renderMapOnly();
     });
     this.externalModeSelect = this.createPanelSelect(
       external,
@@ -4018,10 +5550,10 @@ class MiniWorldMapView extends ItemView {
         ["exact", "Exact"]
       ],
       value => {
+        this.disableAutoDetail();
         this.disableCompleteRoot();
         this.state.externalDetailMode = value;
-        this.resetAdaptiveTuning();
-        this.render();
+        this.renderMapOnly();
       }
     );
     this.externalLimitInput = this.createPanelNumber(
@@ -4034,7 +5566,7 @@ class MiniWorldMapView extends ItemView {
         this.disableAutoDetail();
         this.disableCompleteRoot();
         this.state.externalLinkAnchorLimit = clampNumber(value, 0, MAX_EXTERNAL_LINK_ANCHOR_LIMIT, this.plugin.settings.externalLinkAnchorLimit);
-        this.render();
+        this.renderMapOnly();
       }
     );
   }
@@ -4076,7 +5608,7 @@ class MiniWorldMapView extends ItemView {
       { min: String(MIN_RING_SPACING), max: String(MAX_RING_SPACING), step: "10" },
       value => {
         this.state.columnSpacing = clampNumber(value, MIN_RING_SPACING, MAX_RING_SPACING, DEFAULT_RING_SPACING);
-        this.render();
+        this.renderMapOnly();
       }
     );
     this.rowInput = this.createPanelNumber(
@@ -4087,7 +5619,7 @@ class MiniWorldMapView extends ItemView {
       { min: String(MIN_NODE_SPACING), max: String(MAX_NODE_SPACING), step: "2" },
       value => {
         this.state.rowSpacing = clampNumber(value, MIN_NODE_SPACING, MAX_NODE_SPACING, DEFAULT_NODE_SPACING);
-        this.render();
+        this.renderMapOnly();
       }
     );
 
@@ -4129,6 +5661,10 @@ class MiniWorldMapView extends ItemView {
   renderDefaultsPage(index, graph) {
     const panel = this.getSidePanelTarget();
     this.createPanelPageTitle(panel, "Defaults");
+    const applyLiveDefault = (keys, saveOptions = {}) => {
+      this.plugin.applySettingsToOpenViews(keys, { preservePanel: true });
+      void this.plugin.saveSettings(Object.assign({ rebuild: false, refresh: false }, saveOptions));
+    };
 
     const budgets = this.createPanelSection(panel, "Default Budgets");
     this.createPanelNumber(
@@ -4139,7 +5675,7 @@ class MiniWorldMapView extends ItemView {
       { min: "1", max: String(MAX_ATLAS_DEPTH) },
       value => {
         this.plugin.settings.atlasDepth = clampNumber(value, 1, MAX_ATLAS_DEPTH, DEFAULT_SETTINGS.atlasDepth);
-        void this.plugin.saveSettings();
+        applyLiveDefault("atlasDepth");
       }
     );
     this.createPanelNumber(
@@ -4150,7 +5686,7 @@ class MiniWorldMapView extends ItemView {
       { min: "200", max: String(MAX_RENDER_NODE_LIMIT), step: "100" },
       value => {
         this.plugin.settings.renderNodeLimit = clampNumber(value, 200, MAX_RENDER_NODE_LIMIT, DEFAULT_SETTINGS.renderNodeLimit);
-        void this.plugin.saveSettings();
+        applyLiveDefault("renderNodeLimit");
       }
     );
     this.createPanelNumber(
@@ -4161,7 +5697,7 @@ class MiniWorldMapView extends ItemView {
       { min: "0", max: String(MAX_LINK_LIMIT) },
       value => {
         this.plugin.settings.linkLimit = clampNumber(value, 0, MAX_LINK_LIMIT, DEFAULT_SETTINGS.linkLimit);
-        void this.plugin.saveSettings();
+        applyLiveDefault("linkLimit");
       }
     );
     this.createPanelNumber(
@@ -4172,18 +5708,14 @@ class MiniWorldMapView extends ItemView {
       { min: "0", max: String(MAX_EXTERNAL_LINK_ANCHOR_LIMIT) },
       value => {
         this.plugin.settings.externalLinkAnchorLimit = clampNumber(value, 0, MAX_EXTERNAL_LINK_ANCHOR_LIMIT, DEFAULT_SETTINGS.externalLinkAnchorLimit);
-        void this.plugin.saveSettings();
+        applyLiveDefault("externalLinkAnchorLimit");
       }
     );
 
     const toggles = this.createPanelSection(panel, "Default Toggles");
     this.createPanelToggle(toggles, "default-adaptive-detail", "Adaptive detail", this.plugin.settings.adaptiveDetail, checked => {
       this.plugin.settings.adaptiveDetail = checked;
-      void this.plugin.saveSettings();
-    });
-    this.createPanelToggle(toggles, "default-show-link-overlay", "Show link overlay", this.plugin.settings.showLinkOverlay, checked => {
-      this.plugin.settings.showLinkOverlay = checked;
-      void this.plugin.saveSettings();
+      applyLiveDefault("adaptiveDetail");
     });
     this.createPanelSelect(
       toggles,
@@ -4194,16 +5726,16 @@ class MiniWorldMapView extends ItemView {
       value => {
         this.plugin.settings.hoverHighlightMode = normalizeHoverHighlightMode(value);
         this.plugin.settings.enableLinkHover = hoverHighlightsNoteLinks(this.plugin.settings.hoverHighlightMode);
-        void this.plugin.saveSettings();
+        applyLiveDefault("hoverHighlightMode");
       }
     );
     this.createPanelToggle(toggles, "default-show-external-links", "External links", this.plugin.settings.showExternalLinks, checked => {
       this.plugin.settings.showExternalLinks = checked;
-      void this.plugin.saveSettings();
+      applyLiveDefault("showExternalLinks");
     });
     this.createPanelToggle(toggles, "default-include-unresolved-links", "Unresolved links", this.plugin.settings.includeUnresolvedLinks, checked => {
       this.plugin.settings.includeUnresolvedLinks = checked;
-      void this.plugin.saveSettings();
+      void this.plugin.saveSettings({ immediateRebuild: true, preservePanel: true });
     });
 
     const layoutDefaults = this.createPanelSection(panel, "Default Layout");
@@ -4215,7 +5747,7 @@ class MiniWorldMapView extends ItemView {
       LABEL_VISIBILITY_OPTIONS,
       value => {
         this.plugin.settings.labelVisibility = normalizeLabelVisibility(value);
-        void this.plugin.saveSettings({ rebuild: false });
+        applyLiveDefault("labelVisibility");
       }
     );
     this.createPanelNumber(
@@ -4226,7 +5758,7 @@ class MiniWorldMapView extends ItemView {
       { min: "0", max: String(MAX_SWIRL_STRENGTH), step: "1" },
       value => {
         this.plugin.settings.swirlStrength = clampNumber(value, 0, MAX_SWIRL_STRENGTH, DEFAULT_SWIRL_STRENGTH);
-        void this.plugin.saveSettings({ rebuild: false });
+        applyLiveDefault("swirlStrength");
       }
     );
 
@@ -4266,7 +5798,7 @@ class MiniWorldMapView extends ItemView {
       ],
       value => {
         this.plugin.settings.externalDetailMode = value;
-        void this.plugin.saveSettings();
+        applyLiveDefault("externalDetailMode");
       }
     );
 
@@ -4281,7 +5813,7 @@ class MiniWorldMapView extends ItemView {
           .split("\n")
           .map(line => line.trim())
           .filter(Boolean);
-        void this.plugin.saveSettings();
+        void this.plugin.saveSettings({ immediateRebuild: true, preservePanel: true });
       }
     );
   }
@@ -4316,10 +5848,8 @@ class MiniWorldMapView extends ItemView {
     const next = Array.from(hiddenSet).filter(itemId => validIds.has(itemId));
     this.state.hiddenLegendItems = next;
     this.plugin.settings.hiddenLegendItems = next.slice();
-    void this.plugin.saveSettings({ rebuild: false });
-    if (!this.state.fullscreen && this.lastCanvasBundle) {
-      this.renderSidePanel(this.lastCanvasBundle.index, this.lastCanvasBundle.graph);
-    }
+    void this.plugin.saveSettings({ rebuild: false, refresh: false });
+    this.renderMapOnly();
   }
 
   renderInspectPage(index, graph, forcedNodeId) {
@@ -4366,10 +5896,15 @@ class MiniWorldMapView extends ItemView {
 
     const actions = panel.createDiv({ cls: "mwm-side-actions" });
     this.createIconButton(actions, "pin", "Pin highlighted path", () => {
+      const previousNeedsHoverLinks = this.needsCanvasHoverLinks();
       const pin = this.addPinnedPath(this.createNodePinCandidate(node, this.state.hoverHighlightMode));
       if (!pin) return;
       this.state.sidePage = "pins";
-      this.render();
+      if (previousNeedsHoverLinks !== this.needsCanvasHoverLinks()) this.renderMapOnly();
+      else this.applyPersistentHighlight();
+      if (!this.state.fullscreen && this.lastCanvasBundle) {
+        this.renderSidePanel(this.lastCanvasBundle.index, this.lastCanvasBundle.graph);
+      }
     }, "");
     if (node.type === "note") {
       this.createIconButton(actions, "file-text", "Open note", () => this.openNode(node.id), "");
@@ -4448,10 +5983,15 @@ class MiniWorldMapView extends ItemView {
 
     const actions = panel.createDiv({ cls: "mwm-side-actions" });
     this.createIconButton(actions, "pin", "Pin link", () => {
+      const previousNeedsHoverLinks = this.needsCanvasHoverLinks();
       const pin = this.addPinnedPath(this.createLinkPinCandidate(index, graph, edge));
       if (!pin) return;
       this.state.sidePage = "pins";
-      this.render();
+      if (previousNeedsHoverLinks !== this.needsCanvasHoverLinks()) this.renderMapOnly();
+      else this.applyPersistentHighlight();
+      if (!this.state.fullscreen && this.lastCanvasBundle) {
+        this.renderSidePanel(this.lastCanvasBundle.index, this.lastCanvasBundle.graph);
+      }
     }, "");
     if (source) {
       const button = actions.createEl("button", { cls: "mwm-text-button", attr: { type: "button" } });
@@ -4649,16 +6189,6 @@ class MiniWorldMapSettingTab extends PluginSettingTab {
         .onChange(async value => {
           this.plugin.settings.swirlStrength = clampNumber(value, 0, MAX_SWIRL_STRENGTH, DEFAULT_SWIRL_STRENGTH);
           await this.plugin.saveSettings({ rebuild: false });
-        }));
-
-    new Setting(containerEl)
-      .setName("Show link overlay by default")
-      .setDesc("Layer Obsidian links over the hierarchy when the view opens.")
-      .addToggle(toggle => toggle
-        .setValue(this.plugin.settings.showLinkOverlay)
-        .onChange(async value => {
-          this.plugin.settings.showLinkOverlay = value;
-          await this.plugin.saveSettings();
         }));
 
     new Setting(containerEl)
@@ -6575,10 +8105,43 @@ function buildBudgetChildrenByParent(nodes) {
   return childrenByParent;
 }
 
+function hiddenLegendSetFromState(state = {}) {
+  return new Set(Array.isArray(state.hiddenLegendItems) ? state.hiddenLegendItems : []);
+}
+
+function legendHidesNode(node, graph, hiddenLegend) {
+  if (!node || !hiddenLegend || !hiddenLegend.size) return false;
+  if (node.id === graph?.rootId) return hiddenLegend.has("root");
+  if (node.externalProxy) {
+    if (hiddenLegend.has("outside-file")) return true;
+    return node.type === "unresolved" && hiddenLegend.has("missing");
+  }
+  if (node.type === "external") return hiddenLegend.has("outside");
+  if (node.type === "unresolved") return hiddenLegend.has("missing");
+  if (node.type === "folder") {
+    if (node.representativeFile) return hiddenLegend.has("folder-meta");
+    return hiddenLegend.has("folder");
+  }
+  if (node.type === "note") return hiddenLegend.has("file");
+  return false;
+}
+
+function legendHidesHierarchyEdge(edge, hiddenLegend) {
+  return Boolean(hiddenLegend?.has("tree"));
+}
+
+function legendHidesLinkEdge(edge, hiddenLegend) {
+  if (!edge || !hiddenLegend || !hiddenLegend.size) return false;
+  if (edge.externalCount && hiddenLegend.has("outside-link")) return true;
+  if (edge.unresolvedCount && hiddenLegend.has("dashed-link")) return true;
+  return !edge.externalCount && hiddenLegend.has("link");
+}
+
 function buildCanvasGraphData(index, graph, layout, query, graphSettings = DEFAULT_NATIVE_GRAPH_SETTINGS, options = {}) {
   const nodeSizeMultiplier = clampFloat(graphSettings.nodeSizeMultiplier, 0.55, 2.8, 1);
   const lineSizeMultiplier = clampFloat(graphSettings.lineSizeMultiplier, 0.35, 4, 1);
   const includeHoverLinks = options.includeHoverLinks !== false;
+  const hiddenLegend = hiddenLegendSetFromState(options);
   const nodes = [];
   const nodesById = new Map();
   const hierarchy = [];
@@ -6592,11 +8155,12 @@ function buildCanvasGraphData(index, graph, layout, query, graphSettings = DEFAU
   const hierarchyChildNodeIdsByNode = new Map();
   const edgesById = new Map();
   let maxLinkDegree = 1;
-  for (const node of graph.nodes) {
+  const graphNodes = (graph.nodes || []).filter(node => !legendHidesNode(node, graph, hiddenLegend));
+  for (const node of graphNodes) {
     maxLinkDegree = Math.max(maxLinkDegree, (node.linkCount || 0) + (node.backlinkCount || 0));
   }
 
-  for (const node of graph.nodes) {
+  for (const node of graphNodes) {
     const point = layout.positions.get(node.id);
     if (!point) continue;
     const item = {
@@ -6613,7 +8177,7 @@ function buildCanvasGraphData(index, graph, layout, query, graphSettings = DEFAU
     nodesById.set(node.id, item);
   }
 
-  for (const node of graph.nodes) {
+  for (const node of graphNodes) {
     if (!node || node.parentId === null || node.parentId === undefined) continue;
     const childId = index.visualNodeId(node.id);
     const parentId = index.visualNodeId(node.parentId);
@@ -6669,6 +8233,8 @@ function buildCanvasGraphData(index, graph, layout, query, graphSettings = DEFAU
   };
 
   for (const edge of graph.hierarchyEdges) {
+    if (legendHidesHierarchyEdge(edge, hiddenLegend)) continue;
+    if (!nodesById.has(edge.source) || !nodesById.has(edge.target)) continue;
     const sourcePoint = layout.positions.get(edge.source);
     const targetPoint = layout.positions.get(edge.target);
     if (!sourcePoint || !targetPoint) continue;
@@ -6680,6 +8246,8 @@ function buildCanvasGraphData(index, graph, layout, query, graphSettings = DEFAU
   }
 
   for (const edge of graph.linkEdges) {
+    if (legendHidesLinkEdge(edge, hiddenLegend)) continue;
+    if (!nodesById.has(edge.source) || !nodesById.has(edge.target)) continue;
     const sourcePoint = layout.positions.get(edge.source);
     const targetPoint = layout.positions.get(edge.target);
     if (!sourcePoint || !targetPoint) continue;
@@ -6695,6 +8263,8 @@ function buildCanvasGraphData(index, graph, layout, query, graphSettings = DEFAU
   if (includeHoverLinks) {
     const renderedLinkKeys = new Set(links.map(item => item.key));
     for (const edge of graph.hoverLinkEdges || []) {
+      if (legendHidesLinkEdge(edge, hiddenLegend)) continue;
+      if (!nodesById.has(edge.source) || !nodesById.has(edge.target)) continue;
       const key = edge.id || `${edge.source}->${edge.target}`;
       if (renderedLinkKeys.has(key)) continue;
       const sourcePoint = layout.positions.get(edge.source);
@@ -7327,6 +8897,13 @@ function medianNumber(values, fallback) {
   return numbers.length % 2
     ? numbers[middle]
     : (numbers[middle - 1] + numbers[middle]) / 2;
+}
+
+function normalizeWheelDeltaY(deltaY, deltaMode = 0) {
+  let delta = Number(deltaY) || 0;
+  if (deltaMode === 1) delta *= 40;
+  else if (deltaMode === 2) delta *= 800;
+  return delta;
 }
 
 function zoomToSliderValue(zoom, minZoom, maxZoom) {
