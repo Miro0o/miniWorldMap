@@ -110,8 +110,8 @@ describe('radial layout', () => {
 		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
 		const layout = layoutRadialGraph(graph, { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 0 });
 		const root = layout.positions.get(graph.rootId);
-		expect(root?.x).toBeCloseTo(0);
-		expect(root?.y).toBeCloseTo(0);
+		expect(root?.x).toBeCloseTo(layout.centerX);
+		expect(root?.y).toBeCloseTo(layout.centerY);
 		expect([...layout.positions.values()].every((point) => Number.isFinite(point.x) && Number.isFinite(point.y))).toBe(true);
 		const radii = layout.rings.map((ring) => ring.radius);
 		expect(radii).toEqual([...radii].sort((a, b) => a - b));
@@ -152,7 +152,7 @@ describe('radial layout', () => {
 		const layout = layoutRadialGraph(graph, { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 0 });
 		const nodeRadii = [...layout.positions.entries()]
 			.filter(([id]) => id !== graph.rootId)
-			.map(([, point]) => Math.hypot(point.x, point.y));
+			.map(([, point]) => point.radius);
 		const depthOneRings = layout.rings.filter((ring) => ring.depth === 1);
 		const minRadius = Math.min(...nodeRadii);
 		const maxRadius = Math.max(...nodeRadii);

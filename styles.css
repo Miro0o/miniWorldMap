@@ -928,6 +928,40 @@
 	opacity: 0.72;
 }
 
+.mwm-pin-group {
+	display: grid;
+	gap: 6px;
+	margin-top: 8px;
+}
+
+.mwm-pin-group-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
+.mwm-pin-group-title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.mwm-pin-count {
+	flex: 0 0 auto;
+	min-width: 18px;
+	padding: 1px 5px;
+	border-radius: 999px;
+	background: var(--background-modifier-hover);
+	font-size: 10px;
+	line-height: 1.4;
+	text-align: center;
+	opacity: 0.72;
+}
+
 .mwm-facts {
 	display: grid;
 	grid-template-columns: minmax(72px, max-content) minmax(0, 1fr);
@@ -970,8 +1004,13 @@
 	gap: 6px;
 }
 
+.mwm-pin-row.is-muted {
+	opacity: 0.58;
+}
+
 .mwm-pin-row > button:not(.mwm-pin-main),
-.mwm-pin-group-row > button {
+.mwm-pin-group-row > button,
+.mwm-pin-group-header > button {
 	flex: 0 0 auto;
 	font-size: 10px;
 	padding: 3px 5px;
@@ -982,6 +1021,13 @@
 	flex-basis: 150px;
 	white-space: normal;
 	overflow: hidden;
+}
+
+.mwm-pin-title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .mwm-floating-controls {

@@ -98,6 +98,7 @@ function buildFocusGraph(model: WorldModel, state: VisibleGraphState, settings: 
 	if (activePath) {
 		visible.add(activePath);
 		addAncestors(model, activePath, visible, ROOT_ID);
+		addDescendants(model, activePath, visible, Math.max(30, siblingLimit));
 		const active = model.nodes.get(activePath);
 		if (active?.parentId) {
 			for (const sibling of (model.childrenByParent.get(active.parentId) ?? []).slice(0, siblingLimit)) visible.add(sibling);
@@ -299,6 +300,18 @@ function addDirectFilesForVisibleFolders(model: WorldModel, visible: Set<string>
 			const child = model.nodes.get(childId);
 			if (child?.type === 'note' || child?.type === 'unresolved') visible.add(childId);
 		}
+	}
+}
+
+function addDescendants(model: WorldModel, id: string, visible: Set<string>, limit: number): void {
+	const queue = [...(model.childrenByParent.get(id) ?? [])];
+	let added = 0;
+	while (queue.length > 0 && added < limit) {
+		const childId = queue.shift();
+		if (!childId || visible.has(childId)) continue;
+		visible.add(childId);
+		added++;
+		queue.push(...(model.childrenByParent.get(childId) ?? []));
 	}
 }
 

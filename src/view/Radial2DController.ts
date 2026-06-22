@@ -44,6 +44,7 @@ interface PinPath {
 	id: string;
 	key: string;
 	kind: 'node' | 'link';
+	active: boolean;
 	nodeId?: string;
 	edgeId?: string;
 	source?: string;
@@ -122,7 +123,6 @@ export class Radial2DController extends Component {
 		if (!this.renderer || !this.canvasHost) return;
 		this.renderer.resize(this.canvasHost.clientWidth, this.canvasHost.clientHeight);
 		if (this.needsFit) {
-			this.renderer.fitToLayout();
 			this.needsFit = false;
 		}
 		this.renderer.render();
@@ -134,18 +134,19 @@ export class Radial2DController extends Component {
 
 	rebuild(reason: string): void {
 		const radial = this.radial();
+		const shouldReveal = ['start', 'manual', 'root', 'focus', 'atlas'].includes(reason);
+		const loadingText = this.t('loading.radial');
+		if (shouldReveal) this.renderer?.showLoadingMask(loadingText);
 		this.index.rebuild(radial);
 		this.state.hoverHighlightMode = radial.hoverHighlightMode;
 		this.state.labelVisibility = radial.labelVisibility;
 		this.state.hiddenLegendItems = radial.hiddenLegendItems.slice();
+		this.state.showLinkOverlay = radial.showLinkOverlay || !this.state.hiddenLegendItems.includes('link');
 		this.state.pinNeedsHoverLinks = this.pinnedPathsNeedHoverLinks();
 		this.state.selectedNodeId = this.selectedNodeId;
 		this.state.selectedLink = this.selectedLink;
 		const layoutGraph = this.index.buildVisibleGraph({
 			...this.state,
-			showLinkOverlay: true,
-			hiddenLegendItems: [],
-			pinNeedsHoverLinks: true,
 		});
 		const renderHidden = new Set(this.state.hiddenLegendItems);
 		if (!this.state.showLinkOverlay) renderHidden.add('link');
@@ -156,14 +157,18 @@ export class Radial2DController extends Component {
 			nodeSpacing: DEFAULT_NODE_SPACING,
 			swirlStrength: radial.swirlStrength,
 		});
-		this.renderer?.setTheme(this.resolvedCanvasScheme());
-		this.renderer?.setData(graph, this.layout, radial.labelVisibility);
-		this.resize();
-		this.applyActiveState();
-		this.renderPanel();
-		if (['start', 'manual', 'root', 'focus', 'atlas'].includes(reason)) {
-			this.renderer?.playRevealFromRoot(graph.rootId, this.t('loading.radial'));
+		const renderer = this.renderer;
+		renderer?.beginRenderBatch();
+		try {
+			renderer?.setTheme(this.resolvedCanvasScheme());
+			this.resize();
+			renderer?.setData(graph, this.layout, radial.labelVisibility);
+			this.applyActiveState();
+			if (shouldReveal) renderer?.playRevealFromRoot(graph.rootId, loadingText);
+		} finally {
+			renderer?.endRenderBatch();
 		}
+		this.renderPanel();
 	}
 
 	private radial(): RadialSettings {
@@ -171,7 +176,6 @@ export class Radial2DController extends Component {
 	}
 
 	private registerVaultEvents(): void {
-		this.registerEvent(this.app.metadataCache.on('resolved', this.redrawSoon));
 		this.registerEvent(this.app.vault.on('rename', this.redrawSoon));
 		this.registerEvent(this.app.vault.on('delete', this.redrawSoon));
 		this.registerEvent(this.app.vault.on('create', this.redrawSoon));
@@ -351,10 +355,11 @@ export class Radial2DController extends Component {
 		addNode(activeNode, this.state.hoverHighlightMode, false);
 		addLink(activeLink, false);
 		for (const pin of this.pinnedPaths) {
+			if (!pin.active) continue;
 			if (pin.kind === 'node') addNode(pin.nodeId, pin.mode, true);
 			else addLink(this.findGraphEdgeForPin(pin), true);
 		}
-		state.hasActive = Boolean(activeNode || activeLink || this.pinnedPaths.length);
+		state.hasActive = Boolean(activeNode || activeLink || this.pinnedPaths.some((pin) => pin.active));
 		state.dimOthers = Boolean(activeNode || activeLink);
 		return state;
 	}
@@ -447,6 +452,8 @@ export class Radial2DController extends Component {
 		if (node.type === 'note') this.button(actions, this.t('common.open'), () => void this.openNode(node.id));
 		if (node.type === 'note') this.button(actions, this.t('common.focus'), () => this.focusNote(node.id));
 		if (node.type === 'folder') this.button(actions, this.t('common.root'), () => this.useAsRoot(node.id));
+		const rootParentId = this.currentRootParentId();
+		if (rootParentId !== null) this.button(actions, this.t('inspect.parentRoot'), () => this.useAsRoot(rootParentId));
 		this.renderNeighborList(parent, node);
 	}
 
@@ -502,20 +509,54 @@ export class Radial2DController extends Component {
 			parent.createDiv({ cls: 'mwm-side-muted', text: this.t('pins.empty') });
 			return;
 		}
+		const groupsById = new Map(this.pinGroups.map((group) => [group.id, group]));
+		const pinsByGroup = new Map<string, PinPath[]>();
+		const ungrouped: PinPath[] = [];
 		for (const pin of this.pinnedPaths) {
-			const row = parent.createDiv({ cls: 'mwm-pin-row' });
-			const check = row.createEl('input', { attr: { type: 'checkbox' } });
-			check.checked = this.selectedPinIds.has(pin.id);
-			check.addEventListener('change', () => {
-				if (check.checked) this.selectedPinIds.add(pin.id);
-				else this.selectedPinIds.delete(pin.id);
-				this.renderPanel();
-			});
-			const main = row.createEl('button', { cls: 'mwm-pin-main', text: pin.title });
-			main.addEventListener('click', () => this.locatePin(pin));
-			this.button(row, this.t('common.inspect'), () => this.inspectPin(pin));
-			this.button(row, 'X', () => this.removePin(pin.id));
+			if (!pin.groupId || !groupsById.has(pin.groupId)) {
+				ungrouped.push(pin);
+				continue;
+			}
+			const list = pinsByGroup.get(pin.groupId) ?? [];
+			list.push(pin);
+			pinsByGroup.set(pin.groupId, list);
 		}
+		if (ungrouped.length) this.renderPinGroup(parent, null, ungrouped);
+		for (const group of this.pinGroups) {
+			const pins = pinsByGroup.get(group.id) ?? [];
+			if (pins.length) this.renderPinGroup(parent, group, pins);
+		}
+	}
+
+	private renderPinGroup(parent: HTMLElement, group: PinGroup | null, pins: PinPath[]): void {
+		const wrapper = parent.createDiv({ cls: 'mwm-pin-group' });
+		const header = wrapper.createDiv({ cls: 'mwm-pin-group-header' });
+		header.createSpan({ cls: 'mwm-pin-group-title', text: group?.name ?? this.t('pins.ungrouped') });
+		header.createSpan({ cls: 'mwm-pin-count', text: String(pins.length) });
+		if (group) this.button(header, this.t('common.ungroup'), () => this.removePinGroup(group.id));
+		for (const pin of pins) this.renderPinRow(wrapper, pin);
+	}
+
+	private renderPinRow(parent: HTMLElement, pin: PinPath): void {
+		const row = parent.createDiv({ cls: pin.active ? 'mwm-pin-row' : 'mwm-pin-row is-muted' });
+		const check = row.createEl('input', {
+			cls: 'mwm-pin-check',
+			attr: { type: 'checkbox', title: this.t('pins.selectForGroup'), 'aria-label': this.t('pins.selectForGroup') },
+		});
+		check.checked = this.selectedPinIds.has(pin.id);
+		check.addEventListener('change', () => {
+			if (check.checked) this.selectedPinIds.add(pin.id);
+			else this.selectedPinIds.delete(pin.id);
+			this.renderPanel();
+		});
+		const main = row.createEl('button', { cls: 'mwm-pin-main', attr: { type: 'button', title: pin.path || pin.title } });
+		main.addEventListener('click', () => this.locatePin(pin));
+		main.createDiv({ cls: 'mwm-pin-title', text: pin.title });
+		main.createDiv({ cls: 'mwm-pin-meta', text: `${this.pinKindLabel(pin)} - ${pin.path || '/'}` });
+		this.button(row, pin.active ? this.t('pins.hideHighlight') : this.t('pins.showHighlight'), () => this.togglePinHighlight(pin.id));
+		this.button(row, this.t('common.inspect'), () => this.inspectPin(pin));
+		if (pin.groupId) this.button(row, this.t('common.ungroup'), () => this.ungroupPin(pin.id));
+		this.button(row, 'X', () => this.removePin(pin.id));
 	}
 
 	private renderViewPage(parent: HTMLElement): void {
@@ -810,16 +851,9 @@ export class Radial2DController extends Component {
 		});
 	}
 
-	private addPin(candidate: Omit<PinPath, 'id' | 'key' | 'groupId'>): void {
+	private addPin(candidate: Omit<PinPath, 'id' | 'key' | 'active' | 'groupId'>): void {
 		const key = candidate.kind === 'node' ? `node:${candidate.nodeId}:${candidate.mode}` : `link:${candidate.edgeId ?? `${candidate.source}->${candidate.target}`}`;
-		const existing = this.pinnedPaths.find((pin) => pin.key === key);
-		if (existing) {
-			this.selectedPinIds.add(existing.id);
-			new Notice(this.t('pins.already'));
-			this.renderPanel();
-			return;
-		}
-		const pin: PinPath = { ...candidate, id: `pin-${this.nextPinId++}`, key, groupId: null };
+		const pin: PinPath = { ...candidate, id: `pin-${this.nextPinId++}`, key, active: true, groupId: null };
 		this.pinnedPaths.push(pin);
 		this.selectedPinIds.add(pin.id);
 		this.state.pinNeedsHoverLinks = this.pinnedPathsNeedHoverLinks();
@@ -831,6 +865,7 @@ export class Radial2DController extends Component {
 	private removePin(id: string): void {
 		this.pinnedPaths = this.pinnedPaths.filter((pin) => pin.id !== id);
 		this.selectedPinIds.delete(id);
+		this.dropEmptyPinGroups();
 		this.state.pinNeedsHoverLinks = this.pinnedPathsNeedHoverLinks();
 		this.applyActiveState();
 		this.renderPanel();
@@ -854,8 +889,39 @@ export class Radial2DController extends Component {
 		const groupId = `pin-group-${this.nextPinGroupId++}`;
 		this.pinGroups.push({ id: groupId, name: this.pinGroupName.trim() || `Group ${this.pinGroups.length + 1}` });
 		for (const pin of pins) pin.groupId = groupId;
+		this.dropEmptyPinGroups();
 		this.pinGroupName = '';
 		this.selectedPinIds.clear();
+		this.renderPanel();
+	}
+
+	private removePinGroup(groupId: string): void {
+		this.pinGroups = this.pinGroups.filter((group) => group.id !== groupId);
+		for (const pin of this.pinnedPaths) {
+			if (pin.groupId === groupId) pin.groupId = null;
+		}
+		this.renderPanel();
+	}
+
+	private ungroupPin(pinId: string): void {
+		const pin = this.pinnedPaths.find((item) => item.id === pinId);
+		if (!pin) return;
+		pin.groupId = null;
+		this.dropEmptyPinGroups();
+		this.renderPanel();
+	}
+
+	private dropEmptyPinGroups(): void {
+		const usedGroups = new Set(this.pinnedPaths.map((pin) => pin.groupId).filter((id): id is string => Boolean(id)));
+		this.pinGroups = this.pinGroups.filter((group) => usedGroups.has(group.id));
+	}
+
+	private togglePinHighlight(pinId: string): void {
+		const pin = this.pinnedPaths.find((item) => item.id === pinId);
+		if (!pin) return;
+		pin.active = !pin.active;
+		this.state.pinNeedsHoverLinks = this.pinnedPathsNeedHoverLinks();
+		this.applyActiveState();
 		this.renderPanel();
 	}
 
@@ -881,7 +947,11 @@ export class Radial2DController extends Component {
 	}
 
 	private pinnedPathsNeedHoverLinks(): boolean {
-		return this.pinnedPaths.some((pin) => pin.kind === 'link' || (pin.kind === 'node' && hoverHighlightsNoteLinks(pin.mode)));
+		return this.pinnedPaths.some((pin) => pin.active && (pin.kind === 'link' || (pin.kind === 'node' && hoverHighlightsNoteLinks(pin.mode))));
+	}
+
+	private pinKindLabel(pin: PinPath): string {
+		return pin.kind === 'link' ? this.t('inspect.linkOverlay') : this.t(`hover.${normalizeHoverHighlightMode(pin.mode)}`);
 	}
 
 	private clearDisallowedHoverTargets(): void {
@@ -914,6 +984,15 @@ export class Radial2DController extends Component {
 		this.rebuild('root');
 	}
 
+	private currentRootParentId(): string | null {
+		const rootId = this.graph?.rootId ?? this.state.rootPath;
+		if (rootId === ROOT_ID) return null;
+		const rootNode = this.graph?.nodesById.get(rootId) ?? this.index.nodes.get(rootId);
+		if (rootNode?.parentId !== undefined && rootNode.parentId !== null) return rootNode.parentId;
+		const lastSlash = rootId.lastIndexOf('/');
+		return lastSlash >= 0 ? rootId.slice(0, lastSlash) : ROOT_ID;
+	}
+
 	private useAsRoot(nodeId: string): void {
 		this.state.mode = 'atlas';
 		this.state.rootPath = nodeId;
@@ -923,7 +1002,8 @@ export class Radial2DController extends Component {
 	}
 
 	private focusActiveNote(): void {
-		const active = this.index.getActiveNotePath();
+		const selected = this.selectedNodeId ? this.index.nodes.get(this.selectedNodeId) : null;
+		const active = selected?.type === 'note' ? selected.id : this.index.getActiveNotePath();
 		if (active) this.focusNote(active);
 	}
 
@@ -966,8 +1046,14 @@ export class Radial2DController extends Component {
 		this.panel?.removeClass('gx-theme-dark');
 		this.panel?.removeClass('gx-theme-light');
 		this.panel?.addClass(panelScheme === 'day' ? 'gx-theme-light' : 'gx-theme-dark');
-		const changed = this.renderer?.setTheme(canvasScheme) ?? false;
-		if (changed && this.graph && this.layout) this.renderer?.setData(this.graph, this.layout, this.radial().labelVisibility);
+		const renderer = this.renderer;
+		renderer?.beginRenderBatch();
+		try {
+			const changed = renderer?.setTheme(canvasScheme) ?? false;
+			if (changed && this.graph && this.layout) renderer?.setData(this.graph, this.layout, this.radial().labelVisibility);
+		} finally {
+			renderer?.endRenderBatch();
+		}
 	}
 
 	private resolvedCanvasScheme(): RadialResolvedScheme {

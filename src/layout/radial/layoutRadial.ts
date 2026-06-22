@@ -8,8 +8,8 @@ export const DEFAULT_NODE_SPACING = 126;
 export const MIN_NODE_SPACING = 72;
 export const MAX_NODE_SPACING = 360;
 
-const RING_JAGGED_BAND_FACTOR = 0.36;
-const RING_JAGGED_MAX_FACTOR = 0.28;
+const RING_JAGGED_BAND_FACTOR = 0.26;
+const RING_JAGGED_MAX_FACTOR = 0.22;
 
 export interface RadialPoint {
 	x: number;
@@ -100,15 +100,22 @@ interface RingItem {
 export function layoutRadialGraph(graph: VisibleWorldGraph, options: RadialLayoutOptions): RadialLayout {
 	const baseRingGap = clamp(options.ringSpacing, MIN_RING_SPACING, MAX_RING_SPACING);
 	const baseNodeGap = clamp(options.nodeSpacing, MIN_NODE_SPACING, MAX_NODE_SPACING);
+	const padding = 340;
 	const positions = new Map<string, RadialPoint>();
 	const nodesById = graph.nodesById;
 	const maxDegree = maxLinkDegree(graph.nodes);
 	const normalNodes = graph.nodes.filter((node) => !node.externalProxy && node.type !== 'external');
 	const normalIds = new Set(normalNodes.map((node) => node.id));
 	const spacing = adaptiveLayoutSpacing(graph, normalIds, baseRingGap, baseNodeGap);
-	const childrenByParent = childrenByParentMap(graph, normalIds, nodesById);
-	const metrics = measureMetrics(childrenByParent, nodesById, spacing);
 	const rootId = normalIds.has(graph.rootId) ? graph.rootId : normalIds.has(ROOT_ID) ? ROOT_ID : (normalNodes[0]?.id ?? null);
+	const childrenByParent = childrenByParentMap(graph, normalIds, nodesById);
+	const metrics = new Map<string, Metric>();
+	const reachable = new Set<string>();
+
+	if (rootId !== null) {
+		measureSubtree(rootId, 0, childrenByParent, spacing, metrics);
+		collectReachable(rootId, childrenByParent, reachable);
+	}
 
 	if (rootId !== null) {
 		const rootPoint = makePoint(0, -Math.PI / 2, 0, nodeRadius(nodesById.get(rootId), maxDegree), false);
@@ -129,7 +136,6 @@ export function layoutRadialGraph(graph: VisibleWorldGraph, options: RadialLayou
 		);
 	}
 
-	const reachable = new Set(positions.keys());
 	const orphanNodes = normalNodes.filter((node) => node.id !== rootId && !reachable.has(node.id)).sort(compareLayoutNode);
 	const rootMetric = rootId !== null ? metrics.get(rootId) : null;
 	const maxTreeDepth = Math.max(0, rootMetric?.maxDepth ?? 0);
@@ -151,29 +157,46 @@ export function layoutRadialGraph(graph: VisibleWorldGraph, options: RadialLayou
 
 	const externalFiles = graph.nodes.filter((node) => node.externalProxy).sort(compareLayoutNode);
 	if (externalFiles.length > 0) {
-		placeOuterCircleNodes(externalFiles, positions, graph, nodesById, outerRadius + Math.max(220, spacing.ringGap * 0.52), spacing.nodeGap, -Math.PI / 5, maxTreeDepth + 2, true, maxDegree);
+		outerRadius = Math.max(
+			outerRadius,
+			placeOuterCircleNodes(externalFiles, positions, graph, nodesById, outerRadius + Math.max(220, spacing.ringGap * 0.52), spacing.nodeGap, -Math.PI / 5, maxTreeDepth + 2, true, maxDegree),
+		);
 	}
 
 	const ringTargets = assignDepthRingTargets(positions, graph, spacing, spacing.nodeGap, maxDegree);
 	resolveRadialCollisions(positions, graph, spacing, spacing.nodeGap, ringTargets, maxDegree);
 	enforceDepthRingBands(positions, graph, spacing, spacing.nodeGap, ringTargets, maxDegree);
 	if (spacing.radiusExpansion > 1.001) applyAdaptiveRadiusExpansion(positions, ringTargets, spacing);
-	alignChildrenToParentLanes(positions, childrenByParent, graph, spacing);
-	if (options.swirlStrength > 0.001) applyRadialSwirl(positions, graph, spacing, options.swirlStrength / 100);
+	const spinSpeed = clamp(options.swirlStrength, 0, 100) / 100;
+	const swirlStrength = spinSpeed > 0.001 ? clamp(0.24 + spinSpeed * 0.34, 0.24, 0.58) : 0;
+	if (swirlStrength > 0.001) applyRadialSwirl(positions, graph, spacing, swirlStrength);
+	outerRadius = Math.max(outerRadius, maxRadius(positions));
+	const routeMaxDepth = maxTreeDepth + (externalGroups.length || externalFiles.length ? 2 : orphanNodes.length ? 1 : 0);
+	const routeBundle = computeLinkRoutes(
+		graph.linkEdges,
+		positions,
+		routeMaxDepth,
+		spacing.ringGap,
+		outerRadius + Math.max(150, spacing.ringGap * 0.35),
+	);
+	const rawBounds = radialLayoutBounds(positions, Math.max(routeBundle.maxRadius, outerRadius + Math.max(160, spacing.ringGap * 0.34)));
+	const offsetX = padding - rawBounds.minX;
+	const offsetY = padding - rawBounds.minY;
+	shiftRadialLayout(positions, routeBundle.routes, offsetX, offsetY);
 	anchorHomePositions(positions);
 	const rings = computeRings(positions, ringTargets);
-	const routeMaxDepth = maxTreeDepth + (externalGroups.length || externalFiles.length ? 2 : orphanNodes.length ? 1 : 0);
-	const routes = routeLinks(graph.linkEdges, positions, routeMaxDepth, spacing.ringGap);
-	const bounds = computeBounds(positions, routes);
+	const width = Math.max(900, rawBounds.maxX - rawBounds.minX + padding * 2);
+	const height = Math.max(520, rawBounds.maxY - rawBounds.minY + padding * 2);
+	const bounds = { minX: 0, minY: 0, maxX: width, maxY: height };
 	return {
 		positions,
 		rings,
-		routes,
+		routes: routeBundle.routes,
 		bounds,
-		width: bounds.maxX - bounds.minX,
-		height: bounds.maxY - bounds.minY,
-		centerX: 0,
-		centerY: 0,
+		width,
+		height,
+		centerX: offsetX,
+		centerY: offsetY,
 		ringSpacing: spacing.ringGap,
 		nodeSpacing: spacing.nodeGap,
 	};
@@ -185,44 +208,52 @@ function childrenByParentMap(
 	nodesById: Map<string, WorldNode>,
 ): Map<string, string[]> {
 	const childrenByParent = new Map<string, string[]>();
-	for (const edge of graph.hierarchyEdges) {
-		if (!normalIds.has(edge.source) || !normalIds.has(edge.target)) continue;
-		const list = childrenByParent.get(edge.source);
-		if (list) list.push(edge.target);
-		else childrenByParent.set(edge.source, [edge.target]);
+	for (const node of graph.nodes) {
+		if (!normalIds.has(node.id) || node.parentId === null || node.parentId === undefined || !normalIds.has(node.parentId)) continue;
+		const list = childrenByParent.get(node.parentId);
+		if (list) list.push(node.id);
+		else childrenByParent.set(node.parentId, [node.id]);
 	}
 	for (const children of childrenByParent.values()) children.sort((a, b) => compareLayoutNode(nodesById.get(a), nodesById.get(b)));
 	return childrenByParent;
 }
 
-function measureMetrics(
+function measureSubtree(
+	id: string,
+	depth: number,
 	childrenByParent: Map<string, string[]>,
-	nodesById: Map<string, WorldNode>,
 	spacing: SpacingProfile,
-): Map<string, Metric> {
-	const metrics = new Map<string, Metric>();
-	const measure = (id: string, depth: number, visiting = new Set<string>()): Metric => {
-		const cached = metrics.get(id);
-		if (cached) return cached;
-		if (visiting.has(id)) return { weight: 1, count: 1, maxDepth: depth };
-		visiting.add(id);
-		const incidentPressure = spacing.incidentPressureByNode.get(id) ?? 0;
-		let weight = Math.min(9, incidentPressure * 0.24);
-		let count = 1;
-		let maxDepth = depth;
-		for (const childId of childrenByParent.get(id) ?? []) {
-			const child = measure(childId, depth + 1, visiting);
-			weight += child.weight;
-			count += child.count;
-			maxDepth = Math.max(maxDepth, child.maxDepth);
-		}
-		visiting.delete(id);
-		const metric = { weight: Math.max(1, weight || 1), count, maxDepth };
-		metrics.set(id, metric);
-		return metric;
-	};
-	for (const id of childrenByParent.keys()) measure(id, 0);
-	return metrics;
+	metrics: Map<string, Metric>,
+	visiting = new Set<string>(),
+): Metric {
+	const cached = metrics.get(id);
+	if (cached) return cached;
+	if (visiting.has(id)) {
+		const fallback = { weight: 1, count: 1, maxDepth: depth };
+		metrics.set(id, fallback);
+		return fallback;
+	}
+	visiting.add(id);
+	const incidentPressure = spacing.incidentPressureByNode.get(id) ?? 0;
+	let weight = Math.min(9, incidentPressure * 0.24);
+	let count = 1;
+	let maxDepth = depth;
+	for (const childId of childrenByParent.get(id) ?? []) {
+		const child = measureSubtree(childId, depth + 1, childrenByParent, spacing, metrics, visiting);
+		weight += child.weight;
+		count += child.count;
+		maxDepth = Math.max(maxDepth, child.maxDepth);
+	}
+	visiting.delete(id);
+	const metric = { weight: Math.max(1, weight || 1), count, maxDepth };
+	metrics.set(id, metric);
+	return metric;
+}
+
+function collectReachable(id: string | null | undefined, childrenByParent: Map<string, string[]>, reachable: Set<string>): void {
+	if (id === null || id === undefined || reachable.has(id)) return;
+	reachable.add(id);
+	for (const childId of childrenByParent.get(id) ?? []) collectReachable(childId, childrenByParent, reachable);
 }
 
 function placeRadialChildren(
@@ -775,64 +806,19 @@ function applyAdaptiveRadiusExpansion(
 	}
 }
 
-function alignChildrenToParentLanes(
-	positions: Map<string, RadialPoint>,
-	childrenByParent: Map<string, string[]>,
-	graph: VisibleWorldGraph,
-	spacing: SpacingProfile,
-): void {
-	for (const [parentId, childIds] of childrenByParent.entries()) {
-		const parent = positions.get(parentId);
-		if (!parent || parent.radius <= 0.001 || childIds.length === 0) continue;
-		const parentAngle = Number.isFinite(parent.angle) ? parent.angle : Math.atan2(parent.y, parent.x);
-		const children = childIds
-			.map((id) => {
-				const point = positions.get(id);
-				const node = graph.nodesById.get(id);
-				return point && node && !point.external ? { id, point, node, delta: shortestAngleDelta(parentAngle, point.angle) } : null;
-			})
-			.filter((item): item is { id: string; point: RadialPoint; node: WorldNode; delta: number } => Boolean(item))
-			.sort((a, b) => a.delta - b.delta);
-		if (children.length === 0) continue;
-
-		const averageRadius = children.reduce((sum, child) => sum + Math.max(1, child.point.radius), 0) / children.length;
-		const requiredArc = children.reduce((sum, child) => sum + child.point.nodeRadius * 2.25 + labelArcPadding(child.node) * 0.76, 0);
-		const requiredSpan = Math.min(Math.PI * 1.1, requiredArc / Math.max(1, averageRadius));
-		const currentSpan = children.length > 1 ? Math.max(...children.map((child) => child.delta)) - Math.min(...children.map((child) => child.delta)) : 0;
-		const compactSpan = clamp(Math.max(requiredSpan, currentSpan * 0.58), children.length === 1 ? 0 : 0.035, Math.PI * 0.86);
-		const maxShift = Math.min(Math.PI * 0.18, Math.max(0.03, spacing.branchFanSpan * 0.08));
-		const strength = children.length <= 2 ? 0.54 : children.length <= 8 ? 0.46 : 0.34;
-
-		for (let index = 0; index < children.length; index++) {
-			const child = children[index]!;
-			const slot =
-				children.length === 1
-					? 0
-					: -compactSpan / 2 + (compactSpan * index) / Math.max(1, children.length - 1);
-			const targetAngle = normalizeAngle(parentAngle + slot);
-			const currentAngle = normalizeAngle(child.point.angle);
-			const shift = clamp(shortestAngleDelta(currentAngle, targetAngle) * strength, -maxShift, maxShift);
-			const angle = normalizeAngle(currentAngle + shift);
-			const radius = child.point.radius;
-			child.point.x = Math.cos(angle) * radius;
-			child.point.y = Math.sin(angle) * radius;
-			child.point.angle = angle;
-		}
-	}
-}
-
-function routeLinks(
+function computeLinkRoutes(
 	edges: WorldEdge[],
 	positions: Map<string, RadialPoint>,
 	maxDepth: number,
 	ringSpacing: number,
-): Map<string, RadialRoute> {
+	outerRadius: number,
+): { routes: Map<string, RadialRoute>; maxRadius: number } {
 	const routes = new Map<string, RadialRoute>();
+	const maxRadiusValue = Math.max(outerRadius || 0, 1);
 	for (const edge of edges) {
 		const source = positions.get(edge.source);
 		const target = positions.get(edge.target);
 		if (!source || !target) continue;
-		const depthDelta = Math.abs(source.depth - target.depth);
 		const sourceRadius = Number.isFinite(source.radius) ? source.radius : 0;
 		const targetRadius = Number.isFinite(target.radius) ? target.radius : 0;
 		const sourceAngle = Number.isFinite(source.angle) ? source.angle : Math.atan2(target.y - source.y, target.x - source.x);
@@ -844,7 +830,7 @@ function routeLinks(
 		const shouldCurve =
 			isExternal ||
 			sameOrNearRing ||
-			(depthDelta <= 1 && touchesOuterRing && angleDistance > 0.34) ||
+			(touchesOuterRing && angleDistance > 0.34) ||
 			angleDistance > Math.PI * 0.42;
 		if (shouldCurve) {
 			routes.set(edge.id, {
@@ -858,7 +844,7 @@ function routeLinks(
 			});
 		}
 	}
-	return routes;
+	return { routes, maxRadius: maxRadiusValue };
 }
 
 function computeRings(positions: Map<string, RadialPoint>, ringTargets: Map<number, number>): RadialRing[] {
@@ -896,26 +882,35 @@ function computeRings(positions: Map<string, RadialPoint>, ringTargets: Map<numb
 		.sort((a, b) => a.radius - b.radius);
 }
 
-function computeBounds(positions: Map<string, RadialPoint>, routes: Map<string, RadialRoute>): RadialLayout['bounds'] {
-	let minX = -500;
-	let minY = -500;
-	let maxX = 500;
-	let maxY = 500;
+function radialLayoutBounds(positions: Map<string, RadialPoint>, routeMaxRadius: number): RadialLayout['bounds'] {
+	let minX = -Math.max(1, routeMaxRadius || 1);
+	let minY = -Math.max(1, routeMaxRadius || 1);
+	let maxX = Math.max(1, routeMaxRadius || 1);
+	let maxY = Math.max(1, routeMaxRadius || 1);
 	for (const point of positions.values()) {
-		const pad = point.nodeRadius + 180;
-		minX = Math.min(minX, point.x - pad);
-		minY = Math.min(minY, point.y - pad);
-		maxX = Math.max(maxX, point.x + pad);
-		maxY = Math.max(maxY, point.y + pad);
-	}
-	for (const route of routes.values()) {
-		if (route.kind !== 'outer') continue;
-		minX = Math.min(minX, -route.radius - 160);
-		minY = Math.min(minY, -route.radius - 160);
-		maxX = Math.max(maxX, route.radius + 160);
-		maxY = Math.max(maxY, route.radius + 160);
+		const labelPadX = 170;
+		const labelPadTop = 46;
+		const labelPadBottom = 126;
+		minX = Math.min(minX, point.x - labelPadX);
+		minY = Math.min(minY, point.y - labelPadTop);
+		maxX = Math.max(maxX, point.x + labelPadX);
+		maxY = Math.max(maxY, point.y + labelPadBottom);
 	}
 	return { minX, minY, maxX, maxY };
+}
+
+function shiftRadialLayout(positions: Map<string, RadialPoint>, routes: Map<string, RadialRoute>, offsetX: number, offsetY: number): void {
+	for (const point of positions.values()) {
+		point.x += offsetX;
+		point.y += offsetY;
+		point.centerX = offsetX;
+		point.centerY = offsetY;
+	}
+	for (const route of routes.values()) {
+		if (!Number.isFinite(route.centerX) || !Number.isFinite(route.centerY)) continue;
+		route.centerX += offsetX;
+		route.centerY += offsetY;
+	}
 }
 
 function makePoint(radius: number, angle: number, depth: number, nodeRadiusValue: number, external: boolean): RadialPoint {
