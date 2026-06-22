@@ -10,6 +10,7 @@ export const MAX_NODE_SPACING = 360;
 
 const RING_JAGGED_BAND_FACTOR = 0.26;
 const RING_JAGGED_MAX_FACTOR = 0.22;
+const LEAF_SPAN_DEMAND = 0.045;
 
 export interface RadialPoint {
 	x: number;
@@ -73,6 +74,7 @@ interface Metric {
 	weight: number;
 	count: number;
 	maxDepth: number;
+	spanDemand: number;
 }
 
 interface SpacingProfile {
@@ -266,7 +268,7 @@ function measureSubtree(
 	const cached = metrics.get(id);
 	if (cached) return cached;
 	if (visiting.has(id)) {
-		const fallback = { weight: 1, count: 1, maxDepth: depth };
+		const fallback = { weight: 1, count: 1, maxDepth: depth, spanDemand: LEAF_SPAN_DEMAND };
 		metrics.set(id, fallback);
 		return fallback;
 	}
@@ -275,14 +277,21 @@ function measureSubtree(
 	let weight = Math.min(9, incidentPressure * 0.24);
 	let count = 1;
 	let maxDepth = depth;
+	const childMetrics: Metric[] = [];
 	for (const childId of childrenByParent.get(id) ?? []) {
 		const child = measureSubtree(childId, depth + 1, childrenByParent, spacing, metrics, visiting);
+		childMetrics.push(child);
 		weight += child.weight;
 		count += child.count;
 		maxDepth = Math.max(maxDepth, child.maxDepth);
 	}
 	visiting.delete(id);
-	const metric = { weight: Math.max(1, weight || 1), count, maxDepth };
+	const metric = {
+		weight: Math.max(1, weight || 1),
+		count,
+		maxDepth,
+		spanDemand: subtreeSpanDemand(childMetrics),
+	};
 	metrics.set(id, metric);
 	return metric;
 }
@@ -291,6 +300,29 @@ function collectReachable(id: string | null | undefined, childrenByParent: Map<s
 	if (id === null || id === undefined || reachable.has(id)) return;
 	reachable.add(id);
 	for (const childId of childrenByParent.get(id) ?? []) collectReachable(childId, childrenByParent, reachable);
+}
+
+function subtreeSpanDemand(children: Metric[]): number {
+	if (children.length === 0) return LEAF_SPAN_DEMAND;
+	if (children.length === 1) {
+		return clamp((children[0]?.spanDemand ?? LEAF_SPAN_DEMAND) * 0.985, LEAF_SPAN_DEMAND, Math.PI * 1.94);
+	}
+	const directFanDemand = directChildFanDemand(children.length);
+	const carriedDemand = children.reduce((sum, child) => sum + Math.max(LEAF_SPAN_DEMAND, child.spanDemand), 0);
+	const gapDemand = Math.max(0, children.length - 1) * 0.018;
+	const compactedCarriedDemand = Math.pow(Math.max(0, carriedDemand + gapDemand), 0.92) * 1.04;
+	return clamp(Math.max(directFanDemand, compactedCarriedDemand), LEAF_SPAN_DEMAND, Math.PI * 1.96);
+}
+
+function directChildFanDemand(count: number): number {
+	if (count <= 1) return LEAF_SPAN_DEMAND;
+	if (count <= 2) return 0.16;
+	if (count <= 4) return 0.28 + (count - 2) * 0.09;
+	if (count <= 8) return 0.52 + (count - 4) * 0.13;
+	if (count <= 14) return 1.06 + (count - 8) * 0.18;
+	if (count <= 24) return 2.16 + (count - 14) * 0.17;
+	if (count <= 48) return 3.88 + (count - 24) * 0.062;
+	return Math.min(Math.PI * 1.84, 5.4 + Math.log2(count / 48) * 0.34);
 }
 
 function placeRadialChildren(
@@ -335,9 +367,12 @@ function placeRadialChildren(
 		childRadius = Math.max(childRadius, Math.min(parentPoint.radius + maxExtra, requiredRadius));
 	}
 
-	const childWeights = children.map((childId) => subtreeFanWeight(childId, depth + 1, childrenByParent, metrics));
+	const childWeights = children.map((childId) => subtreeAllocationWeight(childId, depth + 1, childrenByParent, metrics));
 	const totalWeight = Math.max(1, childWeights.reduce((sum, weight) => sum + weight, 0));
-	const localGap = children.length > 1 ? Math.min(nodeGap / childRadius, (span * 0.38) / (children.length - 1)) : 0;
+	const siblingGapScale = children.length > 8 ? clamp(2.2 / Math.sqrt(children.length), 0.28, 0.82) : 1;
+	const gapBudgetFactor =
+		children.length > 8 ? clamp(0.28 - Math.min(0.14, (children.length - 8) * 0.0065), 0.14, 0.28) : 0.38;
+	const localGap = children.length > 1 ? Math.min((nodeGap / childRadius) * siblingGapScale, (span * gapBudgetFactor) / (children.length - 1)) : 0;
 	const usableSpan = Math.max(0.001, span - localGap * Math.max(0, children.length - 1));
 	let cursor = start;
 
@@ -413,7 +448,12 @@ function childFanSpanForParent(
 ): number {
 	if (children.length <= 1) return inheritedSpan;
 	const demandSpan = ((children.length - 1) * nodeGap) / Math.max(1, childRadius) + 0.08;
-	const parentMetric = metrics.get(parentId) ?? { count: children.length + 1, weight: children.length + 1, maxDepth: depth + 1 };
+	const parentMetric = metrics.get(parentId) ?? {
+		count: children.length + 1,
+		weight: children.length + 1,
+		maxDepth: depth + 1,
+		spanDemand: directChildFanDemand(children.length),
+	};
 	const maxChildFanWeight = Math.max(...children.map((childId) => subtreeFanWeight(childId, depth + 1, childrenByParent, metrics)), 1);
 	const totalChildFanWeight = children.reduce((sum, childId) => sum + subtreeFanWeight(childId, depth + 1, childrenByParent, metrics), 0);
 	const branchSignal = Math.log2(Math.max(2, children.length + 1));
@@ -421,10 +461,18 @@ function childFanSpanForParent(
 	const balance = maxChildFanWeight / Math.max(1, totalChildFanWeight);
 	const hasBroadSubtree = parentMetric.count > children.length * 2 || children.some((childId) => (childrenByParent.get(childId)?.length ?? 0) > 2);
 	const baseUse = hasBroadSubtree ? 0.965 : 0.88;
-	const fill = clamp(baseUse + branchSignal * 0.018 + subtreeSignal * 0.012 - balance * 0.045, 0.84, 0.97);
+	let fill = clamp(baseUse + branchSignal * 0.018 + subtreeSignal * 0.012 - balance * 0.045, 0.84, 0.97);
+	if (children.length <= 4 && !hasBroadSubtree) {
+		fill = Math.min(fill, clamp(0.38 + children.length * 0.095 + subtreeSignal * 0.018, 0.48, 0.74));
+	}
 	const desiredSpan = Math.max(demandSpan, inheritedSpan * fill, childFanComfortSpan(children, childrenByParent));
-	const maxSpan = maxExpandedChildFanSpan(parentId, depth, children, inheritedSpan, childRadius, nodeGap, childrenByParent, metrics);
-	return clamp(desiredSpan, Math.min(inheritedSpan, maxSpan), maxSpan);
+	const leafFan = children.every((childId) => (childrenByParent.get(childId)?.length ?? 0) === 0);
+	const maxSpan =
+		leafFan && inheritedSpan < Math.PI * 1.98
+			? Math.max(0.08, inheritedSpan * 0.985)
+			: maxExpandedChildFanSpan(parentId, depth, children, inheritedSpan, childRadius, nodeGap, childrenByParent, metrics);
+	const minSpan = children.length <= 4 ? Math.min(maxSpan, 0.08) : Math.min(inheritedSpan, maxSpan);
+	return clamp(desiredSpan, minSpan, maxSpan);
 }
 
 function childFanComfortSpan(children: string[], childrenByParent: Map<string, string[]>): number {
@@ -465,7 +513,12 @@ function maxExpandedChildFanSpan(
 	const directChildCounts = children.map((childId) => childrenByParent.get(childId)?.length ?? 0);
 	const maxDirectChildren = Math.max(0, ...directChildCounts);
 	const branchyChildren = directChildCounts.filter((childCount) => childCount > 0).length;
-	const parentMetric = metrics.get(parentId) ?? { count: count + 1, weight: count + 1, maxDepth: depth + 1 };
+	const parentMetric = metrics.get(parentId) ?? {
+		count: count + 1,
+		weight: count + 1,
+		maxDepth: depth + 1,
+		spanDemand: directChildFanDemand(count),
+	};
 	const relativeDepth = Math.max(0, parentMetric.maxDepth - depth);
 	const demandSpan = ((count - 1) * nodeGap) / Math.max(1, childRadius) + 0.08;
 	const countLimit =
@@ -494,7 +547,7 @@ function subtreeFanWeight(
 	childrenByParent: Map<string, string[]>,
 	metrics: Map<string, Metric>,
 ): number {
-	const metric = metrics.get(id) ?? { count: 1, weight: 1, maxDepth: depth };
+	const metric = metrics.get(id) ?? { count: 1, weight: 1, maxDepth: depth, spanDemand: LEAF_SPAN_DEMAND };
 	const directChildren = childrenByParent.get(id)?.length ?? 0;
 	const relativeDepth = Math.max(0, metric.maxDepth - depth);
 	const breadth = directChildren > 0 ? Math.pow(directChildren, 1.12) * 1.35 : 0;
@@ -502,6 +555,20 @@ function subtreeFanWeight(
 	const depthReserve = relativeDepth > 0 ? Math.sqrt(relativeDepth + 1) * 0.72 : 0;
 	const linkReserve = Math.pow(Math.max(1, metric.weight), 0.58) * 0.34;
 	return Math.max(1, mass + breadth + depthReserve + linkReserve);
+}
+
+function subtreeAllocationWeight(
+	id: string,
+	depth: number,
+	childrenByParent: Map<string, string[]>,
+	metrics: Map<string, Metric>,
+): number {
+	const metric = metrics.get(id) ?? { count: 1, weight: 1, maxDepth: depth, spanDemand: LEAF_SPAN_DEMAND };
+	const structural = subtreeFanWeight(id, depth, childrenByParent, metrics);
+	const spanDemand = clamp(metric.spanDemand ?? LEAF_SPAN_DEMAND, LEAF_SPAN_DEMAND, Math.PI * 1.98);
+	const demandWeight = Math.pow(spanDemand, 1.62) * 18;
+	const structuralWeight = Math.pow(Math.max(1, structural), 0.58) * 0.18;
+	return Math.max(0.18, demandWeight + structuralWeight);
 }
 
 function placeOuterCircleNodes(
@@ -892,22 +959,27 @@ function applySectorPreservingRingLanes(
 		const targetRadius = ringTargets.get(depth) ?? spacing.ringGap * depth;
 		const depthRatio = clamp((depth - 1) / Math.max(1, maxDepth - 1), 0, 1);
 		const laneGap = Math.max(
-			maxVisualRadius * (1.9 + depthRatio * 0.28) + Math.max(12, nodeGap * (0.1 + depthRatio * 0.02)),
-			spacing.ringGap * (0.052 + depthRatio * 0.016),
+			maxVisualRadius * (2.18 + depthRatio * 0.42) + Math.max(14, nodeGap * (0.13 + depthRatio * 0.035)),
+			spacing.ringGap * (0.074 + depthRatio * 0.028),
 		);
-		const baselineRadius = Math.max(targetRadius, previousOuterRadius + laneGap * 0.46);
+		const baselineRadius = Math.max(targetRadius, previousOuterRadius + laneGap * 0.38);
 		ringTargets.set(depth, baselineRadius);
 		const laneIndexes = sectorPreservingLaneIndexes(items, baselineRadius, nodeGap);
 		let depthOuterRadius = baselineRadius;
 		for (const item of items) {
 			const angle = normalizeAngle(Number.isFinite(item.point.angle) ? item.point.angle : Math.atan2(item.point.y, item.point.x));
 			const kindOffset = sectorPreservingKindOffset(item.kind);
-			const parentOffset = deterministicUnitOffset(item.parentKey, `depth-${depth}-parent-lane`) * 0.13;
+			const parentOffset = deterministicUnitOffset(item.parentKey, `depth-${depth}-parent-lane`) * (0.24 + depthRatio * 0.08);
 			const laneIndex = laneIndexes.get(item.id) ?? 0;
 			const laneDirection = item.kind === 'folder' ? -1 : 1;
-			const laneOffset = kindOffset + parentOffset + laneIndex * 0.28 * laneDirection;
+			const laneStep = 0.38 + Math.min(0.16, laneIndex * 0.025) + depthRatio * 0.05;
+			const laneOffset = clamp(
+				kindOffset + parentOffset + laneIndex * laneStep * laneDirection,
+				-1.22 - depthRatio * 0.2,
+				1.3 + depthRatio * 0.24,
+			);
 			const radius = Math.max(
-				previousOuterRadius + maxVisualRadius * 1.72,
+				previousOuterRadius + maxVisualRadius * 1.58,
 				baselineRadius + laneOffset * laneGap,
 			);
 			item.point.x = Math.cos(angle) * radius;
@@ -917,9 +989,9 @@ function applySectorPreservingRingLanes(
 			item.point.ringBandMin = radius;
 			item.point.ringBandMax = radius;
 			item.point.angle = angle;
-			depthOuterRadius = Math.max(depthOuterRadius, radius + maxVisualRadius * 1.12);
+			depthOuterRadius = Math.max(depthOuterRadius, radius + maxVisualRadius * 0.96);
 		}
-		previousOuterRadius = depthOuterRadius + Math.max(10, nodeGap * 0.045);
+		previousOuterRadius = depthOuterRadius + Math.max(10, nodeGap * 0.038);
 	}
 }
 
@@ -937,13 +1009,13 @@ function sectorPreservingLaneIndexes(
 		else groups.set(key, [item]);
 	}
 	for (const group of groups.values()) {
-		if (group.length <= 10) continue;
+		if (group.length <= 5) continue;
 		const ordered = group.slice().sort((a, b) => normalizeAngle(a.point.angle) - normalizeAngle(b.point.angle));
 		const span = Math.max(0.001, angularSpreadAround(ordered[0]?.point.angle ?? 0, ordered.map((item) => item.point.angle)));
 		if (span > Math.PI * 1.45) continue;
 		const demand = ordered.reduce((sum, item) => sum + item.arcDemand + Math.max(6, nodeGap * 0.08), 0);
-		const capacity = Math.max(nodeGap * 2.4, radius * Math.max(span, 0.16) * 0.82);
-		const laneCount = clamp(Math.ceil(demand / Math.max(1, capacity)), 1, 4);
+		const capacity = Math.max(nodeGap * 1.85, radius * Math.max(span, 0.14) * 0.66);
+		const laneCount = clamp(Math.ceil(demand / Math.max(1, capacity)), 1, 6);
 		if (laneCount <= 1) continue;
 		for (let index = 0; index < ordered.length; index++) laneIndexes.set(ordered[index]!.id, index % laneCount);
 	}
@@ -951,10 +1023,10 @@ function sectorPreservingLaneIndexes(
 }
 
 function sectorPreservingKindOffset(kind: string): number {
-	if (kind === 'folder') return -0.22;
-	if (kind === 'unresolved') return 0.34;
-	if (kind === 'external') return 0.48;
-	return 0.08;
+	if (kind === 'folder') return -0.34;
+	if (kind === 'unresolved') return 0.5;
+	if (kind === 'external') return 0.62;
+	return 0.14;
 }
 
 function placeParentAlignedRingLanes(

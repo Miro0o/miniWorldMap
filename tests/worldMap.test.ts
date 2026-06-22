@@ -359,6 +359,40 @@ describe('radial layout', () => {
 		expect(Math.max(...leafDeltas)).toBeLessThan(2.45);
 	});
 
+	it('keeps dense leaf fans inside their parent sectors so sibling routes do not cross', () => {
+		const records: { path: string; basename: string; kind: 'folder' | 'note' }[] = [
+			{ path: 'Topic', basename: 'Topic', kind: 'folder' },
+			{ path: 'Topic/Alpha', basename: 'Alpha', kind: 'folder' },
+			{ path: 'Topic/Beta', basename: 'Beta', kind: 'folder' },
+		];
+		for (const parent of ['Alpha', 'Beta']) {
+			for (let index = 0; index < 18; index++) {
+				records.push({ path: `Topic/${parent}/Leaf ${index}.md`, basename: `Leaf ${index}`, kind: 'note' });
+			}
+		}
+		const m = buildWorldMap(records, {}, {}, DEFAULT_RADIAL_SETTINGS);
+		const state = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
+		state.showLinkOverlay = false;
+		state.nodeLimit = 1200;
+		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
+		const layout = layoutRadialGraph(graph, { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 0 });
+		const alpha = layout.positions.get('Topic/Alpha');
+		const beta = layout.positions.get('Topic/Beta');
+
+		for (const parent of ['Alpha', 'Beta']) {
+			const parentPoint = layout.positions.get(`Topic/${parent}`);
+			const siblingPoint = layout.positions.get(`Topic/${parent === 'Alpha' ? 'Beta' : 'Alpha'}`);
+			const leaves = Array.from({ length: 18 }, (_, index) => layout.positions.get(`Topic/${parent}/Leaf ${index}.md`)?.angle ?? 0);
+			const maxDelta = Math.max(...leaves.map((angle) => angleDelta(angle, parentPoint?.angle ?? 0)));
+			const nearestSiblingDelta = Math.min(...leaves.map((angle) => angleDelta(angle, siblingPoint?.angle ?? 0)));
+
+			expect(maxDelta).toBeLessThan((parentPoint?.sectorSpan ?? Math.PI * 2) * 0.5 + 0.04);
+			expect(nearestSiblingDelta).toBeGreaterThan(0.08);
+		}
+
+		expect(angleDelta(alpha?.angle ?? 0, beta?.angle ?? 0)).toBeGreaterThan(0.8);
+	});
+
 	it('sizes nodes primarily by note-link degree instead of descendant count', () => {
 		const records: { path: string; basename: string; kind: 'folder' | 'note' }[] = [
 			{ path: 'Archive', basename: 'Archive', kind: 'folder' },

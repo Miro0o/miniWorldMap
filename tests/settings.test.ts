@@ -37,6 +37,11 @@ describe('Mini World Map settings migration', () => {
 		expect(mergeSettings({ radial: { showLinkOverlay: false } }).radial.showLinkOverlay).toBe(false);
 	});
 
+	it('defaults radial ring guides off but preserves the panel option', () => {
+		expect(mergeSettings({}).radial.showRingGuides).toBe(false);
+		expect(mergeSettings({ radial: { showRingGuides: true } }).radial.showRingGuides).toBe(true);
+	});
+
 	it('normalizes the shared language option', () => {
 		expect(mergeSettings({ language: 'zh' }).language).toBe('zh');
 		expect(mergeSettings({ language: 'fr' }).language).toBe('en');

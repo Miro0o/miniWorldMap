@@ -133,6 +133,7 @@ export class RadialRenderer {
 	private revealOverlay: HTMLElement | null = null;
 	private renderBatchDepth = 0;
 	private pendingRender = false;
+	private showRingGuides = false;
 
 	constructor(private container: HTMLElement) {
 		this.renderer = new WebGLRenderer({ antialias: true, alpha: false });
@@ -163,9 +164,10 @@ export class RadialRenderer {
 		return true;
 	}
 
-	setData(graph: VisibleWorldGraph, layout: RadialLayout, labelVisibility: LabelVisibility): void {
+	setData(graph: VisibleWorldGraph, layout: RadialLayout, labelVisibility: LabelVisibility, showRingGuides = false): void {
 		this.graph = graph;
 		this.layout = layout;
+		this.showRingGuides = showRingGuides;
 		this.edgeVisuals.clear();
 		this.disposeObjects();
 		this.buildRings();
@@ -381,7 +383,7 @@ export class RadialRenderer {
 	}
 
 	private buildRings(): void {
-		if (!this.layout?.rings.length) {
+		if (!this.showRingGuides || !this.layout?.rings.length) {
 			this.ringSegments = null;
 			return;
 		}

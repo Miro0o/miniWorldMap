@@ -99,6 +99,7 @@ const STRINGS: Record<string, Record<Language, string>> = {
 	'control.hoverTargets': { en: 'Hover targets', zh: '悬停对象' },
 	'control.labels': { en: 'Labels', zh: '标签' },
 	'control.spin': { en: 'Ring spin', zh: '环形旋转' },
+	'control.ringGuides': { en: 'Ring guides', zh: '环形参考线' },
 	'control.outsideLinks': { en: 'Outside links', zh: '外部链接' },
 	'control.outsideDetail': { en: 'Outside detail', zh: '外部细节' },
 	'control.exactOutsideFiles': { en: 'Exact outside notes', zh: '精确外部笔记' },

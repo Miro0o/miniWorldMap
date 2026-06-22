@@ -163,7 +163,7 @@ export class Radial2DController extends Component {
 		renderer?.beginRenderBatch();
 		try {
 			renderer?.setTheme(this.resolvedCanvasScheme());
-			renderer?.setData(graph, this.layout, radial.labelVisibility);
+			renderer?.setData(graph, this.layout, radial.labelVisibility, radial.showRingGuides);
 			this.resize();
 			this.applyActiveState();
 			if (shouldReveal) renderer?.playRevealFromRoot(graph.rootId, loadingText);
@@ -629,6 +629,15 @@ export class Radial2DController extends Component {
 			this.saveSoon();
 			this.rebuild('spin');
 		});
+		this.toggle(parent, this.t('control.ringGuides'), radial.showRingGuides, (value) => {
+			radial.showRingGuides = value;
+			this.saveSoon();
+			if (this.graph && this.layout && this.renderer) {
+				this.renderer.setData(this.graph, this.layout, radial.labelVisibility, radial.showRingGuides);
+				this.applyActiveState();
+			}
+			this.renderPanel();
+		});
 		this.toggle(parent, this.t('control.outsideLinks'), this.state.showExternalLinks, (value) => {
 			this.state.showExternalLinks = value;
 			radial.showExternalLinks = value;
@@ -1052,7 +1061,7 @@ export class Radial2DController extends Component {
 		renderer?.beginRenderBatch();
 		try {
 			const changed = renderer?.setTheme(canvasScheme) ?? false;
-			if (changed && this.graph && this.layout) renderer?.setData(this.graph, this.layout, this.radial().labelVisibility);
+			if (changed && this.graph && this.layout) renderer?.setData(this.graph, this.layout, this.radial().labelVisibility, this.radial().showRingGuides);
 		} finally {
 			renderer?.endRenderBatch();
 		}

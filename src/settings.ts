@@ -70,6 +70,7 @@ export interface RadialSettings {
 	hoverHighlightMode: HoverHighlightMode;
 	hoverTargetMode: HoverTargetMode;
 	swirlStrength: number;
+	showRingGuides: boolean;
 	hiddenLegendItems: string[];
 	ignoreFolders: string[];
 }
@@ -138,6 +139,7 @@ export const DEFAULT_RADIAL_SETTINGS: RadialSettings = {
 	hoverHighlightMode: 'hierarchy-all',
 	hoverTargetMode: 'nodes',
 	swirlStrength: 0,
+	showRingGuides: false,
 	hiddenLegendItems: [],
 	ignoreFolders: ['.git', '.obsidian'],
 };
@@ -206,6 +208,7 @@ export function mergeRadialSettings(saved: unknown): RadialSettings {
 		hoverHighlightMode: normalizeHoverHighlightMode(hoverMode),
 		hoverTargetMode: normalizeHoverTargetMode(s['hoverTargetMode']),
 		swirlStrength: clampNumber(s['swirlStrength'], 0, MAX_SWIRL_STRENGTH, d.swirlStrength),
+		showRingGuides: typeof s['showRingGuides'] === 'boolean' ? s['showRingGuides'] : d.showRingGuides,
 		hiddenLegendItems: Array.isArray(s['hiddenLegendItems'])
 			? s['hiddenLegendItems'].filter((id): id is string => typeof id === 'string' && legendIds.has(id))
 			: d.hiddenLegendItems.slice(),
