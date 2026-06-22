@@ -26,6 +26,7 @@ export default class MiniWorldMapPlugin extends Plugin {
 	settings: MiniWorldMapSettings = mergeSettings(null);
 
 	async onload(): Promise<void> {
+		console.info('[Mini World Map] loading');
 		this.settings = mergeSettings(await this.loadData());
 		this.registerView(VIEW_TYPE_MINI_WORLD_MAP, (leaf) => new MiniWorldMapView(leaf, this));
 

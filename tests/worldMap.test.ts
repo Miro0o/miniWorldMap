@@ -30,6 +30,22 @@ function model(overrides: Partial<typeof DEFAULT_RADIAL_SETTINGS> = {}) {
 	);
 }
 
+function angleDelta(a: number, b: number): number {
+	const full = Math.PI * 2;
+	const delta = ((a - b + Math.PI) % full + full) % full - Math.PI;
+	return Math.abs(delta);
+}
+
+function signedAngleDelta(a: number, b: number): number {
+	const full = Math.PI * 2;
+	return ((a - b + Math.PI) % full + full) % full - Math.PI;
+}
+
+function angleSpreadAround(center: number, angles: number[]): number {
+	const deltas = angles.map((angle) => signedAngleDelta(angle, center));
+	return Math.max(...deltas) - Math.min(...deltas);
+}
+
 describe('world-map model', () => {
 	it('indexes folders, notes, representatives, unresolved links, and ignored folders', () => {
 		const m = model();
@@ -136,6 +152,236 @@ describe('radial layout', () => {
 		expect(atlas?.depth).toBe(1);
 		expect(sub?.depth).toBe(2);
 		expect(topic?.depth).toBe(3);
+	});
+
+	it('keeps descendant branches approximately aligned with their parents', () => {
+		const branchRecords = [
+			{ path: 'Alpha', basename: 'Alpha', kind: 'folder' as const },
+			{ path: 'Alpha/One.md', basename: 'One', kind: 'note' as const },
+			{ path: 'Alpha/Two.md', basename: 'Two', kind: 'note' as const },
+			{ path: 'Alpha/Sub', basename: 'Sub', kind: 'folder' as const },
+			{ path: 'Alpha/Sub/Deep.md', basename: 'Deep', kind: 'note' as const },
+			{ path: 'Beta', basename: 'Beta', kind: 'folder' as const },
+			{ path: 'Beta/One.md', basename: 'One', kind: 'note' as const },
+			{ path: 'Beta/Two.md', basename: 'Two', kind: 'note' as const },
+			{ path: 'Gamma', basename: 'Gamma', kind: 'folder' as const },
+			{ path: 'Gamma/One.md', basename: 'One', kind: 'note' as const },
+		];
+		const m = buildWorldMap(branchRecords, {}, {}, DEFAULT_RADIAL_SETTINGS);
+		const state = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
+		state.showLinkOverlay = false;
+		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
+		const layout = layoutRadialGraph(graph, { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 0 });
+		const alpha = layout.positions.get('Alpha');
+		const alphaSub = layout.positions.get('Alpha/Sub');
+		const deep = layout.positions.get('Alpha/Sub/Deep.md');
+		const beta = layout.positions.get('Beta');
+		const betaOne = layout.positions.get('Beta/One.md');
+
+		expect(angleDelta(alphaSub?.angle ?? 0, alpha?.angle ?? 0)).toBeLessThan(0.9);
+		expect(angleDelta(deep?.angle ?? 0, alphaSub?.angle ?? 0)).toBeLessThan(0.9);
+		expect(angleDelta(betaOne?.angle ?? 0, beta?.angle ?? 0)).toBeLessThan(0.9);
+	});
+
+	it('fans crowded siblings around the parent ray instead of stacking them on one angle', () => {
+		const childRecords = Array.from({ length: 28 }, (_, index) => ({
+			path: `Topic/Child ${index}.md`,
+			basename: `Child ${index}`,
+			kind: 'note' as const,
+		}));
+		const m = buildWorldMap(
+			[{ path: 'Topic', basename: 'Topic', kind: 'folder' as const }, ...childRecords],
+			{},
+			{},
+			DEFAULT_RADIAL_SETTINGS,
+		);
+		const state = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
+		state.showLinkOverlay = false;
+		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
+		const layout = layoutRadialGraph(graph, { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 0 });
+		const parent = layout.positions.get('Topic');
+
+		const childDeltas = childRecords.map((record) => signedAngleDelta(layout.positions.get(record.path)?.angle ?? 0, parent?.angle ?? 0));
+		const absoluteDeltas = childDeltas.map(Math.abs);
+		const roundedAngles = new Set(childRecords.map((record) => Math.round((layout.positions.get(record.path)?.angle ?? 0) * 100)));
+		expect(Math.max(...absoluteDeltas)).toBeLessThan(3.05);
+		expect(Math.max(...childDeltas) - Math.min(...childDeltas)).toBeGreaterThan(4.6);
+		expect(roundedAngles.size).toBeGreaterThan(18);
+	});
+
+	it('keeps a deep route from spiraling across unrelated angles', () => {
+		const records: { path: string; basename: string; kind: 'folder' | 'note' }[] = [{ path: 'Core', basename: 'Core', kind: 'folder' }];
+		for (let branch = 0; branch < 12; branch++) {
+			const branchPath = `Core/Branch ${branch}`;
+			records.push({ path: branchPath, basename: `Branch ${branch}`, kind: 'folder' as const });
+			for (let section = 0; section < 8; section++) {
+				const sectionPath = `${branchPath}/Section ${section}`;
+				records.push({ path: sectionPath, basename: `Section ${section}`, kind: 'folder' as const });
+				for (let topic = 0; topic < 6; topic++) {
+					const topicPath = `${sectionPath}/Topic ${topic}`;
+					records.push({ path: topicPath, basename: `Topic ${topic}`, kind: 'folder' as const });
+					records.push({ path: `${topicPath}/Leaf ${topic}.md`, basename: `Leaf ${topic}`, kind: 'note' as const });
+				}
+			}
+		}
+		const m = buildWorldMap(records, {}, {}, DEFAULT_RADIAL_SETTINGS);
+		const state = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
+		state.showLinkOverlay = false;
+		state.nodeLimit = 1200;
+		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
+		const layout = layoutRadialGraph(graph, { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 0 });
+		const route = [
+			'Core',
+			'Core/Branch 5',
+			'Core/Branch 5/Section 4',
+			'Core/Branch 5/Section 4/Topic 3',
+			'Core/Branch 5/Section 4/Topic 3/Leaf 3.md',
+		].map((id) => layout.positions.get(id)?.angle ?? 0);
+		const stepDeltas = route.slice(1).map((angle, index) => angleDelta(angle, route[index] ?? 0));
+		const branchAngles = Array.from({ length: 12 }, (_, index) => layout.positions.get(`Core/Branch ${index}`)?.angle ?? 0);
+
+		expect(angleSpreadAround(layout.positions.get('Core')?.angle ?? 0, branchAngles)).toBeGreaterThan(4.2);
+		expect(Math.max(...stepDeltas)).toBeLessThan(1.16);
+		expect(angleSpreadAround(route[0] ?? 0, route)).toBeLessThan(1.9);
+	});
+
+	it('keeps large same-depth subtrees spread across their inherited fan', () => {
+		const records: { path: string; basename: string; kind: 'folder' | 'note' }[] = [
+			{ path: 'Hub', basename: 'Hub', kind: 'folder' },
+			{ path: 'Hub/Big', basename: 'Big', kind: 'folder' },
+			{ path: 'Hub/Small A', basename: 'Small A', kind: 'folder' },
+			{ path: 'Hub/Small B', basename: 'Small B', kind: 'folder' },
+			{ path: 'Hub/Small C', basename: 'Small C', kind: 'folder' },
+			{ path: 'Hub/Small A/Leaf.md', basename: 'Leaf', kind: 'note' },
+			{ path: 'Hub/Small B/Leaf.md', basename: 'Leaf', kind: 'note' },
+			{ path: 'Hub/Small C/Leaf.md', basename: 'Leaf', kind: 'note' },
+		];
+		for (let index = 0; index < 18; index++) {
+			records.push({ path: `Hub/Big/Topic ${index}.md`, basename: `Topic ${index}`, kind: 'note' });
+		}
+		const m = buildWorldMap(records, {}, {}, DEFAULT_RADIAL_SETTINGS);
+		const state = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
+		state.showLinkOverlay = false;
+		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
+		const layout = layoutRadialGraph(graph, { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 0 });
+		const big = layout.positions.get('Hub/Big');
+		const bigChildAngles = Array.from({ length: 18 }, (_, index) => layout.positions.get(`Hub/Big/Topic ${index}.md`)?.angle ?? 0);
+
+		expect(angleSpreadAround(big?.angle ?? 0, bigChildAngles)).toBeGreaterThan(3.4);
+	});
+
+	it('keeps deep hierarchy rings compact when arc space is available', () => {
+		const records: { path: string; basename: string; kind: 'folder' | 'note' }[] = [{ path: 'Root', basename: 'Root', kind: 'folder' }];
+		for (let branch = 0; branch < 10; branch++) {
+			const branchPath = `Root/Branch ${branch}`;
+			records.push({ path: branchPath, basename: `Branch ${branch}`, kind: 'folder' });
+			for (let depth = 0; depth < 5; depth++) {
+				const path = `${branchPath}/${Array.from({ length: depth + 1 }, (_, index) => `Layer ${index}`).join('/')}`;
+				records.push({ path, basename: `Layer ${depth}`, kind: 'folder' });
+				records.push({ path: `${path}/Leaf ${branch}-${depth}.md`, basename: `Leaf ${branch}-${depth}`, kind: 'note' });
+			}
+		}
+		const m = buildWorldMap(records, {}, {}, DEFAULT_RADIAL_SETTINGS);
+		const state = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
+		state.showLinkOverlay = false;
+		state.nodeLimit = 1200;
+		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
+		const layout = layoutRadialGraph(graph, { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 0 });
+		const hierarchyRings = layout.rings.filter((ring) => ring.depth > 0).sort((a, b) => a.depth - b.depth);
+		const averageGap = ((hierarchyRings[hierarchyRings.length - 1]?.radius ?? 0) - (hierarchyRings[0]?.radius ?? 0)) / Math.max(1, hierarchyRings.length - 1);
+
+		expect(layout.ringSpacing).toBeLessThan(900);
+		expect(averageGap).toBeLessThan(760);
+	});
+
+	it('lets delayed deep branches spend the wedge they carried outward', () => {
+		const deepBase = 'Trunk/Branch/Layer A/Layer B/Layer C';
+		const records: { path: string; basename: string; kind: 'folder' | 'note' }[] = [
+			{ path: 'Trunk', basename: 'Trunk', kind: 'folder' },
+			{ path: 'Trunk/Branch', basename: 'Branch', kind: 'folder' },
+			{ path: 'Trunk/Branch/Layer A', basename: 'Layer A', kind: 'folder' },
+			{ path: 'Trunk/Branch/Layer A/Layer B', basename: 'Layer B', kind: 'folder' },
+			{ path: deepBase, basename: 'Layer C', kind: 'folder' },
+		];
+		for (let leaf = 0; leaf < 18; leaf++) {
+			records.push({ path: `${deepBase}/Leaf ${leaf}.md`, basename: `Leaf ${leaf}`, kind: 'note' });
+		}
+		const m = buildWorldMap(records, {}, {}, DEFAULT_RADIAL_SETTINGS);
+		const state = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
+		state.showLinkOverlay = false;
+		state.nodeLimit = 1200;
+		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
+		const layout = layoutRadialGraph(graph, { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 0 });
+		const parent = layout.positions.get(deepBase);
+		const leaves = Array.from({ length: 18 }, (_, index) => layout.positions.get(`${deepBase}/Leaf ${index}.md`)?.angle ?? 0);
+
+		expect(angleSpreadAround(parent?.angle ?? 0, leaves)).toBeGreaterThan(4.4);
+	});
+
+	it('expands crowded deep fans without throwing the route off its parent ray', () => {
+		const crowdedBase = 'Branch 9/Lane/Hub';
+		const records: { path: string; basename: string; kind: 'folder' | 'note' }[] = [];
+		for (let branch = 0; branch < 22; branch++) {
+			const branchPath = `Branch ${branch}`;
+			const lanePath = `${branchPath}/Lane`;
+			const hubPath = `${lanePath}/Hub`;
+			records.push({ path: branchPath, basename: `Branch ${branch}`, kind: 'folder' });
+			records.push({ path: lanePath, basename: 'Lane', kind: 'folder' });
+			records.push({ path: hubPath, basename: 'Hub', kind: 'folder' });
+			const leafCount = branch === 9 ? 24 : 2;
+			for (let leaf = 0; leaf < leafCount; leaf++) {
+				records.push({ path: `${hubPath}/Leaf ${leaf}.md`, basename: `Leaf ${leaf}`, kind: 'note' });
+			}
+		}
+		const m = buildWorldMap(records, {}, {}, DEFAULT_RADIAL_SETTINGS);
+		const state = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
+		state.showLinkOverlay = false;
+		state.nodeLimit = 1600;
+		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
+		const layout = layoutRadialGraph(graph, { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 0 });
+		const parent = layout.positions.get(crowdedBase);
+		const leaves = Array.from({ length: 24 }, (_, index) => layout.positions.get(`${crowdedBase}/Leaf ${index}.md`)?.angle ?? 0);
+		const centeredLeafIndex = leaves.reduce(
+			(best, angle, index) => (angleDelta(angle, parent?.angle ?? 0) < angleDelta(leaves[best] ?? 0, parent?.angle ?? 0) ? index : best),
+			0,
+		);
+		const middleRoute = [
+			'Branch 9',
+			'Branch 9/Lane',
+			crowdedBase,
+			`${crowdedBase}/Leaf ${centeredLeafIndex}.md`,
+		].map((id) => layout.positions.get(id)?.angle ?? 0);
+		const routeSteps = middleRoute.slice(1).map((angle, index) => angleDelta(angle, middleRoute[index] ?? 0));
+		const leafDeltas = leaves.map((angle) => angleDelta(angle, parent?.angle ?? 0));
+
+		expect(angleSpreadAround(parent?.angle ?? 0, leaves)).toBeGreaterThan(3.6);
+		expect(Math.max(...routeSteps)).toBeLessThan(1.15);
+		expect(Math.max(...leafDeltas)).toBeLessThan(2.45);
+	});
+
+	it('sizes nodes primarily by note-link degree instead of descendant count', () => {
+		const records: { path: string; basename: string; kind: 'folder' | 'note' }[] = [
+			{ path: 'Archive', basename: 'Archive', kind: 'folder' },
+			{ path: 'Linked.md', basename: 'Linked', kind: 'note' },
+		];
+		for (let index = 0; index < 80; index++) {
+			records.push({ path: `Archive/Quiet ${index}.md`, basename: `Quiet ${index}`, kind: 'note' });
+			records.push({ path: `Targets/Target ${index}.md`, basename: `Target ${index}`, kind: 'note' });
+		}
+		const resolvedLinks = Object.fromEntries(
+			Array.from({ length: 24 }, (_, index) => [`Targets/Target ${index}.md`, 1]),
+		);
+		const m = buildWorldMap(records, { 'Linked.md': resolvedLinks }, {}, DEFAULT_RADIAL_SETTINGS);
+		const state = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
+		state.showLinkOverlay = true;
+		state.nodeLimit = 1200;
+		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
+		const layout = layoutRadialGraph(graph, { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 0 });
+		const linked = layout.positions.get('Linked.md');
+		const archive = layout.positions.get('Archive');
+
+		expect(linked?.nodeRadius ?? 0).toBeGreaterThan((archive?.nodeRadius ?? 0) * 1.8);
+		expect(archive?.nodeRadius ?? 0).toBeLessThan(11);
 	});
 
 	it('does not invent hierarchy rings for flat same-parent root notes', () => {

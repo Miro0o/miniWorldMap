@@ -50,6 +50,7 @@ const copyAssets = {
 			if (result.errors.length > 0) return;
 			fs.copyFileSync('manifest.json', path.join(outDir, 'manifest.json'));
 			fs.copyFileSync('styles.css', path.join(outDir, 'styles.css'));
+			fs.writeFileSync(path.join(outDir, 'package.json'), `${JSON.stringify({ type: 'commonjs' }, null, 2)}\n`);
 			if (!prod) {
 				// pjeby/hot-reload 监听该标记文件所在的插件目录
 				fs.writeFileSync(path.join(outDir, '.hotreload'), '');

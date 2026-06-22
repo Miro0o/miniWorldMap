@@ -108,6 +108,7 @@ export class Radial2DController extends Component {
 	}
 
 	async start(): Promise<void> {
+		console.info('[Mini World Map] starting 2D map');
 		this.contentEl.addClass('mwm-radial-mode');
 		this.canvasHost = this.contentEl.createDiv({ cls: 'mwm-radial-host' });
 		this.renderer = new RadialRenderer(this.canvasHost);
@@ -122,8 +123,9 @@ export class Radial2DController extends Component {
 	resize(): void {
 		if (!this.renderer || !this.canvasHost) return;
 		this.renderer.resize(this.canvasHost.clientWidth, this.canvasHost.clientHeight);
-		if (this.needsFit) {
+		if (this.needsFit && this.renderer.fitToLayout()) {
 			this.needsFit = false;
+			return;
 		}
 		this.renderer.render();
 	}
@@ -161,8 +163,8 @@ export class Radial2DController extends Component {
 		renderer?.beginRenderBatch();
 		try {
 			renderer?.setTheme(this.resolvedCanvasScheme());
-			this.resize();
 			renderer?.setData(graph, this.layout, radial.labelVisibility);
+			this.resize();
 			this.applyActiveState();
 			if (shouldReveal) renderer?.playRevealFromRoot(graph.rootId, loadingText);
 		} finally {

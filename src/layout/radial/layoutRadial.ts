@@ -2,7 +2,7 @@ import type { VisibleWorldGraph, WorldEdge, WorldNode } from '../../world/types'
 import { ROOT_ID } from '../../world/types';
 
 export const DEFAULT_RING_SPACING = 960;
-export const MIN_RING_SPACING = 720;
+export const MIN_RING_SPACING = 520;
 export const MAX_RING_SPACING = 2800;
 export const DEFAULT_NODE_SPACING = 126;
 export const MIN_NODE_SPACING = 72;
@@ -28,6 +28,9 @@ export interface RadialPoint {
 	ringRadius?: number;
 	ringBandMin?: number;
 	ringBandMax?: number;
+	sectorStart?: number;
+	sectorEnd?: number;
+	sectorSpan?: number;
 }
 
 export interface RadialRing {
@@ -95,6 +98,40 @@ interface RingItem {
 	visualRadius: number;
 	arcDemand: number;
 	preferred: number;
+	parentSectorSpan: number;
+	sectorSpan: number;
+	fanWeight: number;
+	parentIsRoot: boolean;
+}
+
+interface FanPlacement {
+	item: RingItem;
+	angle: number;
+	sectorStart: number;
+	sectorEnd: number;
+}
+
+interface ParentRingGroup {
+	parentId: string;
+	parentAngle: number;
+	preferred: number;
+	arcDemand: number;
+	fanWeight: number;
+	span: number;
+	center: number;
+	sectorSpan: number;
+	items: RingItem[];
+}
+
+interface ParentRingSectorEntry {
+	group: ParentRingGroup;
+	anchor: number;
+	minSpan: number;
+	desiredSpan: number;
+	maxSpan: number;
+	weight: number;
+	parentAnchored: boolean;
+	anchorPull: number;
 }
 
 export function layoutRadialGraph(graph: VisibleWorldGraph, options: RadialLayoutOptions): RadialLayout {
@@ -118,7 +155,8 @@ export function layoutRadialGraph(graph: VisibleWorldGraph, options: RadialLayou
 	}
 
 	if (rootId !== null) {
-		const rootPoint = makePoint(0, -Math.PI / 2, 0, nodeRadius(nodesById.get(rootId), maxDegree), false);
+		const rootPoint = makePoint(0, -Math.PI / 2, 0, nodeRadius(nodesById.get(rootId), maxDegree, spacing.incidentPressureByNode.get(rootId) ?? 0), false);
+		setPointSector(rootPoint, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2);
 		positions.set(rootId, rootPoint);
 		placeRadialChildren(
 			rootId,
@@ -143,7 +181,7 @@ export function layoutRadialGraph(graph: VisibleWorldGraph, options: RadialLayou
 	if (orphanNodes.length > 0) {
 		outerRadius = Math.max(
 			outerRadius,
-			placeOuterCircleNodes(orphanNodes, positions, graph, nodesById, outerRadius + spacing.ringGap * 0.72, spacing.nodeGap, -Math.PI / 2, maxTreeDepth + 1, false, maxDegree),
+			placeOuterCircleNodes(orphanNodes, positions, graph, nodesById, outerRadius + spacing.ringGap * 0.64, spacing.nodeGap, -Math.PI / 2, maxTreeDepth + 1, false, maxDegree, spacing.incidentPressureByNode),
 		);
 	}
 
@@ -151,7 +189,7 @@ export function layoutRadialGraph(graph: VisibleWorldGraph, options: RadialLayou
 	if (externalGroups.length > 0) {
 		outerRadius = Math.max(
 			outerRadius,
-			placeOuterCircleNodes(externalGroups, positions, graph, nodesById, outerRadius + spacing.ringGap * 0.62, spacing.nodeGap * 1.15, -Math.PI / 3, maxTreeDepth + 1, true, maxDegree),
+			placeOuterCircleNodes(externalGroups, positions, graph, nodesById, outerRadius + spacing.ringGap * 0.54, spacing.nodeGap * 1.15, -Math.PI / 3, maxTreeDepth + 1, true, maxDegree, spacing.incidentPressureByNode),
 		);
 	}
 
@@ -159,13 +197,12 @@ export function layoutRadialGraph(graph: VisibleWorldGraph, options: RadialLayou
 	if (externalFiles.length > 0) {
 		outerRadius = Math.max(
 			outerRadius,
-			placeOuterCircleNodes(externalFiles, positions, graph, nodesById, outerRadius + Math.max(220, spacing.ringGap * 0.52), spacing.nodeGap, -Math.PI / 5, maxTreeDepth + 2, true, maxDegree),
+			placeOuterCircleNodes(externalFiles, positions, graph, nodesById, outerRadius + Math.max(180, spacing.ringGap * 0.44), spacing.nodeGap, -Math.PI / 5, maxTreeDepth + 2, true, maxDegree, spacing.incidentPressureByNode),
 		);
 	}
 
 	const ringTargets = assignDepthRingTargets(positions, graph, spacing, spacing.nodeGap, maxDegree);
-	resolveRadialCollisions(positions, graph, spacing, spacing.nodeGap, ringTargets, maxDegree);
-	enforceDepthRingBands(positions, graph, spacing, spacing.nodeGap, ringTargets, maxDegree);
+	applySectorPreservingRingLanes(positions, graph, spacing, spacing.nodeGap, ringTargets, maxDegree);
 	if (spacing.radiusExpansion > 1.001) applyAdaptiveRadiusExpansion(positions, ringTargets, spacing);
 	const spinSpeed = clamp(options.swirlStrength, 0, 100) / 100;
 	const swirlStrength = spinSpeed > 0.001 ? clamp(0.24 + spinSpeed * 0.34, 0.24, 0.58) : 0;
@@ -280,15 +317,13 @@ function placeRadialChildren(
 	let childRadius = parentPoint.radius + localRadialGap(parentId, depth, children, metrics, spacing, rootId);
 	const nodeGap = localArcGap(parentId, children, metrics, spacing, rootId);
 
-	if (children.length === 1 && parentId === rootId) {
-		const localSpan = Math.max(Math.PI * 0.36, spacing.branchFanSpan * 0.82);
+	if (children.length === 1) {
+		const localSpan = parentId === rootId ? Math.PI * 2 : span;
 		start = parentAngle - localSpan / 2;
 		end = parentAngle + localSpan / 2;
 		span = localSpan;
 	} else if (parentId !== rootId) {
-		const demandSpan = children.length > 1 ? ((children.length - 1) * nodeGap) / childRadius + 0.08 : Math.max(Math.PI * 0.24, spacing.branchFanSpan * 0.62);
-		const cappedFan = Math.min(span, spacing.branchFanSpan);
-		const localSpan = Math.min(span, Math.max(cappedFan, demandSpan));
+		const localSpan = childFanSpanForParent(parentId, depth, children, span, childRadius, nodeGap, childrenByParent, metrics);
 		start = parentAngle - localSpan / 2;
 		end = parentAngle + localSpan / 2;
 		span = localSpan;
@@ -300,18 +335,22 @@ function placeRadialChildren(
 		childRadius = Math.max(childRadius, Math.min(parentPoint.radius + maxExtra, requiredRadius));
 	}
 
-	const totalWeight = Math.max(1, children.reduce((sum, childId) => sum + (metrics.get(childId)?.weight ?? 1), 0));
+	const childWeights = children.map((childId) => subtreeFanWeight(childId, depth + 1, childrenByParent, metrics));
+	const totalWeight = Math.max(1, childWeights.reduce((sum, weight) => sum + weight, 0));
 	const localGap = children.length > 1 ? Math.min(nodeGap / childRadius, (span * 0.38) / (children.length - 1)) : 0;
 	const usableSpan = Math.max(0.001, span - localGap * Math.max(0, children.length - 1));
 	let cursor = start;
 
-	for (const childId of children) {
-		const childSpan = children.length === 1 ? usableSpan : usableSpan * ((metrics.get(childId)?.weight ?? 1) / totalWeight);
+	for (let index = 0; index < children.length; index++) {
+		const childId = children[index]!;
+		const childSpan = children.length === 1 ? usableSpan : usableSpan * ((childWeights[index] ?? 1) / totalWeight);
 		const childStart = cursor;
 		const childEnd = cursor + childSpan;
 		const angle = childStart + childSpan / 2;
 		const node = nodesById.get(childId);
-		positions.set(childId, makePoint(childRadius, angle, depth + 1, nodeRadius(node, maxDegree), false));
+		const childPoint = makePoint(childRadius, angle, depth + 1, nodeRadius(node, maxDegree, spacing.incidentPressureByNode.get(childId) ?? 0), false);
+		setPointSector(childPoint, childStart, childEnd);
+		positions.set(childId, childPoint);
 		placeRadialChildren(childId, depth + 1, childStart, childEnd, angle, childrenByParent, metrics, positions, nodesById, spacing, rootId, maxDegree);
 		cursor = childEnd + localGap;
 	}
@@ -331,12 +370,12 @@ function localRadialGap(
 	const childRoot = Math.sqrt(Math.max(1, childCount));
 	const subtreeSignal = Math.log2(Math.max(1, parentMetric.count || parentMetric.weight || 1));
 	const pressureSignal = Math.sqrt(Math.max(0, incidentPressure));
-	let factor = 0.62 + depth * 0.105 + childRoot * 0.135 + subtreeSignal * 0.094 + pressureSignal * 0.086;
+	let factor = 0.48 + depth * 0.068 + childRoot * 0.096 + subtreeSignal * 0.062 + pressureSignal * 0.052;
 	if (parentId === rootId) factor *= 0.96;
-	if (childCount <= 4) factor = Math.min(factor, parentId === rootId ? 0.94 : 1.12);
-	if (childCount >= 14) factor = Math.max(factor, 1.24 + Math.min(1.1, childRoot * 0.09));
-	if (childCount >= 40) factor = Math.max(factor, 1.56 + Math.min(1.34, childRoot * 0.084));
-	return clamp(spacing.baseRingGap * factor, parentId === rootId ? 260 : 300, 4400);
+	if (childCount <= 4) factor = Math.min(factor, parentId === rootId ? 0.78 : 0.92);
+	if (childCount >= 14) factor = Math.max(factor, 1.02 + Math.min(0.78, childRoot * 0.068));
+	if (childCount >= 40) factor = Math.max(factor, 1.28 + Math.min(1.02, childRoot * 0.064));
+	return clamp(spacing.baseRingGap * factor, parentId === rootId ? 220 : 250, 3400);
 }
 
 function localArcGap(
@@ -362,6 +401,109 @@ function localArcGap(
 	return clamp(spacing.baseNodeGap * factor, 132, 920);
 }
 
+function childFanSpanForParent(
+	parentId: string,
+	depth: number,
+	children: string[],
+	inheritedSpan: number,
+	childRadius: number,
+	nodeGap: number,
+	childrenByParent: Map<string, string[]>,
+	metrics: Map<string, Metric>,
+): number {
+	if (children.length <= 1) return inheritedSpan;
+	const demandSpan = ((children.length - 1) * nodeGap) / Math.max(1, childRadius) + 0.08;
+	const parentMetric = metrics.get(parentId) ?? { count: children.length + 1, weight: children.length + 1, maxDepth: depth + 1 };
+	const maxChildFanWeight = Math.max(...children.map((childId) => subtreeFanWeight(childId, depth + 1, childrenByParent, metrics)), 1);
+	const totalChildFanWeight = children.reduce((sum, childId) => sum + subtreeFanWeight(childId, depth + 1, childrenByParent, metrics), 0);
+	const branchSignal = Math.log2(Math.max(2, children.length + 1));
+	const subtreeSignal = Math.log2(Math.max(2, parentMetric.count || children.length + 1));
+	const balance = maxChildFanWeight / Math.max(1, totalChildFanWeight);
+	const hasBroadSubtree = parentMetric.count > children.length * 2 || children.some((childId) => (childrenByParent.get(childId)?.length ?? 0) > 2);
+	const baseUse = hasBroadSubtree ? 0.965 : 0.88;
+	const fill = clamp(baseUse + branchSignal * 0.018 + subtreeSignal * 0.012 - balance * 0.045, 0.84, 0.97);
+	const desiredSpan = Math.max(demandSpan, inheritedSpan * fill, childFanComfortSpan(children, childrenByParent));
+	const maxSpan = maxExpandedChildFanSpan(parentId, depth, children, inheritedSpan, childRadius, nodeGap, childrenByParent, metrics);
+	return clamp(desiredSpan, Math.min(inheritedSpan, maxSpan), maxSpan);
+}
+
+function childFanComfortSpan(children: string[], childrenByParent: Map<string, string[]>): number {
+	const count = children.length;
+	if (count <= 1) return 0;
+	const directChildCounts = children.map((childId) => childrenByParent.get(childId)?.length ?? 0);
+	const branchyChildren = directChildCounts.filter((childCount) => childCount > 0).length;
+	const maxDirectChildren = Math.max(0, ...directChildCounts);
+	const base =
+		count >= 48
+			? Math.PI * 1.68
+			: count >= 24
+				? Math.PI * 1.26
+				: count >= 14
+					? Math.PI * 1.1
+					: count >= 9
+						? Math.PI * 0.82
+						: count >= 5
+							? Math.PI * 0.56
+							: count >= 3
+								? Math.PI * 0.34
+								: Math.PI * 0.2;
+	const branchPenalty = branchyChildren > 0 ? clamp(1 - Math.sqrt(branchyChildren) * 0.095 - Math.sqrt(maxDirectChildren) * 0.03, 0.56, 0.92) : 1;
+	return base * branchPenalty;
+}
+
+function maxExpandedChildFanSpan(
+	parentId: string,
+	depth: number,
+	children: string[],
+	inheritedSpan: number,
+	childRadius: number,
+	nodeGap: number,
+	childrenByParent: Map<string, string[]>,
+	metrics: Map<string, Metric>,
+): number {
+	const count = children.length;
+	const directChildCounts = children.map((childId) => childrenByParent.get(childId)?.length ?? 0);
+	const maxDirectChildren = Math.max(0, ...directChildCounts);
+	const branchyChildren = directChildCounts.filter((childCount) => childCount > 0).length;
+	const parentMetric = metrics.get(parentId) ?? { count: count + 1, weight: count + 1, maxDepth: depth + 1 };
+	const relativeDepth = Math.max(0, parentMetric.maxDepth - depth);
+	const demandSpan = ((count - 1) * nodeGap) / Math.max(1, childRadius) + 0.08;
+	const countLimit =
+		count >= 48
+			? Math.PI * 1.82
+			: count >= 24
+				? Math.PI * 1.68
+				: count >= 14
+					? Math.PI * 1.5
+					: count >= 9
+						? Math.PI * 1.16
+						: count >= 5
+							? Math.PI * 0.72
+							: Math.PI * 0.48;
+	const branchPenalty = branchyChildren > 0 ? clamp(1 - Math.sqrt(branchyChildren) * 0.08 - Math.sqrt(maxDirectChildren) * 0.025, 0.62, 0.94) : 1;
+	const depthLift = clamp(1 + Math.max(0, depth - 1) * 0.035 + Math.sqrt(relativeDepth) * 0.026, 1, 1.22);
+	const demandLift = demandSpan > inheritedSpan ? clamp(demandSpan / Math.max(0.08, inheritedSpan), 1, 1.35) : 1;
+	const expandedLimit = countLimit * branchPenalty * depthLift * demandLift;
+	const inheritedAllowance = inheritedSpan * (count >= 9 ? 1.45 : count >= 5 ? 1.28 : 1.14);
+	return clamp(Math.max(inheritedAllowance, expandedLimit, demandSpan * 1.04), 0.12, Math.PI * 1.88);
+}
+
+function subtreeFanWeight(
+	id: string,
+	depth: number,
+	childrenByParent: Map<string, string[]>,
+	metrics: Map<string, Metric>,
+): number {
+	const metric = metrics.get(id) ?? { count: 1, weight: 1, maxDepth: depth };
+	const directChildren = childrenByParent.get(id)?.length ?? 0;
+	const relativeDepth = Math.max(0, metric.maxDepth - depth);
+	const breadth = directChildren > 0 ? Math.pow(directChildren, 1.12) * 1.35 : 0;
+	const mass = Math.pow(Math.max(1, metric.count), 0.78);
+	const depthReserve = relativeDepth > 0 ? Math.sqrt(relativeDepth + 1) * 0.72 : 0;
+	const linkReserve = Math.pow(Math.max(1, metric.weight), 0.58) * 0.34;
+	return Math.max(1, mass + breadth + depthReserve + linkReserve);
+}
+
 function placeOuterCircleNodes(
 	nodes: WorldNode[],
 	positions: Map<string, RadialPoint>,
@@ -373,6 +515,7 @@ function placeOuterCircleNodes(
 	depth: number,
 	external: boolean,
 	maxDegree: number,
+	incidentPressureByNode = new Map<string, number>(),
 ): number {
 	if (nodes.length === 0) return radius;
 	const slot = (Math.PI * 2) / nodes.length;
@@ -390,7 +533,7 @@ function placeOuterCircleNodes(
 		const evenAngle = offset + index * slot;
 		const preferredDelta = shortestAngleDelta(evenAngle, item.preferred);
 		const angle = crowding < Math.PI * 1.35 ? evenAngle + preferredDelta * 0.55 : evenAngle;
-		positions.set(item.node.id, makePoint(radius, angle, depth || item.node.depth || 1, nodeRadius(nodesById.get(item.node.id), maxDegree), external));
+		positions.set(item.node.id, makePoint(radius, angle, depth || item.node.depth || 1, nodeRadius(nodesById.get(item.node.id), maxDegree, incidentPressureByNode.get(item.node.id) ?? 0), external));
 	}
 	return radius;
 }
@@ -407,7 +550,7 @@ function assignDepthRingTargets(
 	for (const [id, point] of positions.entries()) {
 		const depth = Math.max(0, Math.round(point.depth || 0));
 		const node = graph.nodesById.get(id);
-		const visualRadius = nodeRadius(node, maxDegree);
+		const visualRadius = nodeRadius(node, maxDegree, spacing.incidentPressureByNode.get(id) ?? 0);
 		const diameter = visualRadius * 2 + Math.max(18, nodeGap * 0.36);
 		const entry = byDepth.get(depth) ?? { count: 0, diameterTotal: 0, maxDiameter: 0, external: 0, linkPressure: 0 };
 		entry.count++;
@@ -428,15 +571,15 @@ function assignDepthRingTargets(
 		if (!entry) continue;
 		const avgDiameter = entry.diameterTotal / Math.max(1, entry.count);
 		const rawDemand = entry.count > 1 ? (entry.count * avgDiameter) / (Math.PI * 2) : 0;
-		const compressedDemand = rawDemand > 0 ? Math.pow(rawDemand, 0.64) * Math.pow(spacing.ringGap, 0.36) : 0;
+		const compressedDemand = rawDemand > 0 ? Math.pow(rawDemand, 0.58) * Math.pow(spacing.ringGap, 0.32) : 0;
 		const depthRatio = depth / Math.max(1, maxDepth);
-		const outerExpansion = 1 + Math.pow(depthRatio, 1.35) * 0.34;
-		const pressureExpansion = 1 + Math.min(0.28, Math.sqrt(entry.linkPressure / Math.max(1, entry.count)) * 0.036);
-		const depthCompression = clamp(1 - depthRatio * 0.1, 0.84, 0.98);
+		const outerExpansion = 1 + Math.pow(depthRatio, 1.35) * 0.2;
+		const pressureExpansion = 1 + Math.min(0.22, Math.sqrt(entry.linkPressure / Math.max(1, entry.count)) * 0.028);
+		const depthCompression = clamp(1 - depthRatio * 0.16, 0.78, 0.96);
 		const baseRadius = depth * spacing.ringGap * globalCompression * depthCompression * outerExpansion * pressureExpansion;
-		const minSeparatedRadius = previousRadius + spacing.ringGap * (entry.external ? 0.54 : 0.62);
-		const crowdingRadius = compressedDemand * globalCompression * outerExpansion * pressureExpansion + entry.maxDiameter * 1.45;
-		const maxStepRadius = previousRadius + spacing.ringGap * (entry.external ? 1.45 : 1.72) * outerExpansion;
+		const minSeparatedRadius = previousRadius + spacing.ringGap * (entry.external ? 0.44 : 0.5);
+		const crowdingRadius = compressedDemand * globalCompression * outerExpansion * pressureExpansion + entry.maxDiameter * 1.24;
+		const maxStepRadius = previousRadius + spacing.ringGap * (entry.external ? 1.18 : 1.34) * outerExpansion;
 		const radius = Math.min(maxStepRadius, Math.max(baseRadius, minSeparatedRadius, crowdingRadius));
 		ringTargets.set(depth, radius);
 		previousRadius = radius;
@@ -463,7 +606,7 @@ function assignDepthRingTargets(
 	return ringTargets;
 }
 
-function resolveRadialCollisions(
+export function resolveRadialCollisions(
 	positions: Map<string, RadialPoint>,
 	graph: VisibleWorldGraph,
 	spacing: SpacingProfile,
@@ -489,7 +632,7 @@ function resolveRadialCollisions(
 	for (const [id, point] of positions.entries()) {
 		const node = graph.nodesById.get(id);
 		if (!node) continue;
-		const visualRadius = nodeRadius(node, maxDegree) * 1.72;
+		const visualRadius = nodeRadius(node, maxDegree, spacing.incidentPressureByNode.get(id) ?? 0) * 1.72;
 		const spacingPad = Math.min(320, basePad + labelCollisionPadding(node));
 		const collisionRadius = visualRadius + spacingPad;
 		const depth = Math.max(0, Math.round(point.depth || 0));
@@ -601,7 +744,7 @@ function resolveRadialCollisions(
 	}
 }
 
-function enforceDepthRingBands(
+export function enforceDepthRingBands(
 	positions: Map<string, RadialPoint>,
 	graph: VisibleWorldGraph,
 	spacing: SpacingProfile,
@@ -621,15 +764,29 @@ function enforceDepthRingBands(
 			point.angle = -Math.PI / 2;
 			continue;
 		}
-		const visualRadius = nodeRadius(node, maxDegree);
+		const visualRadius = nodeRadius(node, maxDegree, spacing.incidentPressureByNode.get(id) ?? 0);
 		const labelDemand = labelCollisionPadding(node) + labelArcPadding(node) * clamp(0.58 + Math.min(1, depth / 4) * 0.42, 0.58, 1);
 		const arcDemand = visualRadius * 2.75 + labelDemand * 2.7 + Math.max(22, nodeGap * 0.22);
 		const currentAngle = normalizeAngle(Number.isFinite(point.angle) ? point.angle : Math.atan2(point.y, point.x));
-		const parentPoint = node.parentId ? positions.get(node.parentId) : null;
+		const parentPoint = node.parentId !== null && node.parentId !== undefined ? positions.get(node.parentId) : null;
 		const parentAngle = parentPoint && Number.isFinite(parentPoint.angle) ? normalizeAngle(parentPoint.angle) : currentAngle;
 		const preferred = parentPoint ? blendAngles(currentAngle, parentAngle, 0.68) : currentAngle;
 		const list = byDepth.get(depth) ?? [];
-		list.push({ id, node, point, depth, parentId: node.parentId ?? null, parentAngle, visualRadius, arcDemand, preferred });
+		list.push({
+			id,
+			node,
+			point,
+			depth,
+			parentId: node.parentId ?? null,
+			parentAngle,
+			visualRadius,
+			arcDemand,
+			preferred,
+			parentSectorSpan: clamp(parentPoint?.sectorSpan ?? Math.PI * 2, 0.024, Math.PI * 2),
+			sectorSpan: clamp(point.sectorSpan ?? 0, 0, Math.PI * 2),
+			fanWeight: 1,
+			parentIsRoot: false,
+		});
 		byDepth.set(depth, list);
 	}
 
@@ -694,6 +851,680 @@ function enforceDepthRingBands(
 	}
 }
 
+function applySectorPreservingRingLanes(
+	positions: Map<string, RadialPoint>,
+	graph: VisibleWorldGraph,
+	spacing: SpacingProfile,
+	nodeGap: number,
+	ringTargets: Map<number, number>,
+	maxDegree: number,
+): void {
+	const byDepth = new Map<number, { id: string; node: WorldNode; point: RadialPoint; visualRadius: number; arcDemand: number; kind: string; parentKey: string }[]>();
+	for (const [id, point] of positions.entries()) {
+		const node = graph.nodesById.get(id);
+		if (!node) continue;
+		const depth = Math.max(0, Math.round(point.depth || 0));
+		if (depth === 0) {
+			point.x = 0;
+			point.y = 0;
+			point.radius = 0;
+			point.ringRadius = 0;
+			point.ringBandMin = 0;
+			point.ringBandMax = 0;
+			point.angle = -Math.PI / 2;
+			continue;
+		}
+		const visualRadius = nodeRadius(node, maxDegree, spacing.incidentPressureByNode.get(id) ?? 0);
+		const arcDemand = visualRadius * 2.4 + labelArcPadding(node) * 1.55 + Math.max(18, nodeGap * 0.18);
+		const parentKey = node.parentId ?? graph.rootId ?? ROOT_ID;
+		const list = byDepth.get(depth) ?? [];
+		list.push({ id, node, point, visualRadius, arcDemand, kind: nodeKindKey(node), parentKey });
+		byDepth.set(depth, list);
+	}
+
+	let previousOuterRadius = 0;
+	const depths = [...byDepth.keys()].sort((a, b) => a - b);
+	const maxDepth = Math.max(...depths, 1);
+	for (const depth of depths) {
+		const items = byDepth.get(depth);
+		if (!items?.length) continue;
+		const maxVisualRadius = Math.max(...items.map((item) => item.visualRadius), 4);
+		const targetRadius = ringTargets.get(depth) ?? spacing.ringGap * depth;
+		const depthRatio = clamp((depth - 1) / Math.max(1, maxDepth - 1), 0, 1);
+		const laneGap = Math.max(
+			maxVisualRadius * (1.9 + depthRatio * 0.28) + Math.max(12, nodeGap * (0.1 + depthRatio * 0.02)),
+			spacing.ringGap * (0.052 + depthRatio * 0.016),
+		);
+		const baselineRadius = Math.max(targetRadius, previousOuterRadius + laneGap * 0.46);
+		ringTargets.set(depth, baselineRadius);
+		const laneIndexes = sectorPreservingLaneIndexes(items, baselineRadius, nodeGap);
+		let depthOuterRadius = baselineRadius;
+		for (const item of items) {
+			const angle = normalizeAngle(Number.isFinite(item.point.angle) ? item.point.angle : Math.atan2(item.point.y, item.point.x));
+			const kindOffset = sectorPreservingKindOffset(item.kind);
+			const parentOffset = deterministicUnitOffset(item.parentKey, `depth-${depth}-parent-lane`) * 0.13;
+			const laneIndex = laneIndexes.get(item.id) ?? 0;
+			const laneDirection = item.kind === 'folder' ? -1 : 1;
+			const laneOffset = kindOffset + parentOffset + laneIndex * 0.28 * laneDirection;
+			const radius = Math.max(
+				previousOuterRadius + maxVisualRadius * 1.72,
+				baselineRadius + laneOffset * laneGap,
+			);
+			item.point.x = Math.cos(angle) * radius;
+			item.point.y = Math.sin(angle) * radius;
+			item.point.radius = radius;
+			item.point.ringRadius = radius;
+			item.point.ringBandMin = radius;
+			item.point.ringBandMax = radius;
+			item.point.angle = angle;
+			depthOuterRadius = Math.max(depthOuterRadius, radius + maxVisualRadius * 1.12);
+		}
+		previousOuterRadius = depthOuterRadius + Math.max(10, nodeGap * 0.045);
+	}
+}
+
+function sectorPreservingLaneIndexes(
+	items: { id: string; point: RadialPoint; arcDemand: number; kind: string; parentKey: string }[],
+	radius: number,
+	nodeGap: number,
+): Map<string, number> {
+	const laneIndexes = new Map<string, number>();
+	const groups = new Map<string, typeof items>();
+	for (const item of items) {
+		const key = `${item.parentKey}:${item.kind}`;
+		const list = groups.get(key);
+		if (list) list.push(item);
+		else groups.set(key, [item]);
+	}
+	for (const group of groups.values()) {
+		if (group.length <= 10) continue;
+		const ordered = group.slice().sort((a, b) => normalizeAngle(a.point.angle) - normalizeAngle(b.point.angle));
+		const span = Math.max(0.001, angularSpreadAround(ordered[0]?.point.angle ?? 0, ordered.map((item) => item.point.angle)));
+		if (span > Math.PI * 1.45) continue;
+		const demand = ordered.reduce((sum, item) => sum + item.arcDemand + Math.max(6, nodeGap * 0.08), 0);
+		const capacity = Math.max(nodeGap * 2.4, radius * Math.max(span, 0.16) * 0.82);
+		const laneCount = clamp(Math.ceil(demand / Math.max(1, capacity)), 1, 4);
+		if (laneCount <= 1) continue;
+		for (let index = 0; index < ordered.length; index++) laneIndexes.set(ordered[index]!.id, index % laneCount);
+	}
+	return laneIndexes;
+}
+
+function sectorPreservingKindOffset(kind: string): number {
+	if (kind === 'folder') return -0.22;
+	if (kind === 'unresolved') return 0.34;
+	if (kind === 'external') return 0.48;
+	return 0.08;
+}
+
+function placeParentAlignedRingLanes(
+	positions: Map<string, RadialPoint>,
+	graph: VisibleWorldGraph,
+	spacing: SpacingProfile,
+	nodeGap: number,
+	ringTargets: Map<number, number>,
+	maxDegree: number,
+	childrenByParent: Map<string, string[]>,
+	metrics: Map<string, Metric>,
+): void {
+	const idsByDepth = new Map<number, string[]>();
+	for (const [id, point] of positions.entries()) {
+		const node = graph.nodesById.get(id);
+		if (!node) continue;
+		const depth = Math.max(0, Math.round(point.depth || 0));
+		if (depth === 0) {
+			point.x = 0;
+			point.y = 0;
+			point.radius = 0;
+			point.ringRadius = 0;
+			point.angle = -Math.PI / 2;
+			continue;
+		}
+		const list = idsByDepth.get(depth) ?? [];
+		list.push(id);
+		idsByDepth.set(depth, list);
+	}
+
+	let previousOuterRadius = 0;
+	const depths = [...idsByDepth.keys()].sort((a, b) => a - b);
+	const maxDepth = Math.max(...depths, 1);
+	for (const depth of depths) {
+		const items = buildDepthRingItems(idsByDepth.get(depth) ?? [], positions, graph, nodeGap, maxDegree, spacing.incidentPressureByNode, childrenByParent, metrics);
+		if (items.length === 0) continue;
+		const maxVisualRadius = Math.max(...items.map((item) => item.visualRadius), 4);
+		const targetRadius = ringTargets.get(depth) ?? spacing.ringGap * depth;
+		const depthRatio = clamp((depth - 1) / Math.max(1, maxDepth - 1), 0, 1);
+		const laneGap = Math.max(
+			maxVisualRadius * (2.05 + depthRatio * 0.36) + Math.max(14, nodeGap * (0.12 + depthRatio * 0.028)),
+			spacing.ringGap * (0.064 + depthRatio * 0.024),
+		);
+		const baselineRadius = Math.max(targetRadius, previousOuterRadius + laneGap * 0.52);
+		ringTargets.set(depth, baselineRadius);
+		const groups = buildParentRingGroups(items, baselineRadius, nodeGap);
+		assignParentRingSectors(groups, baselineRadius, nodeGap);
+
+		let depthOuterRadius = baselineRadius;
+		for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+			const group = groups[groupIndex];
+			if (!group) continue;
+			depthOuterRadius = Math.max(
+				depthOuterRadius,
+				placeAlignedGroupItems(group, groupIndex, baselineRadius, laneGap, spacing, nodeGap),
+			);
+		}
+		previousOuterRadius = depthOuterRadius + maxVisualRadius * 0.98 + Math.max(12, nodeGap * 0.07);
+	}
+}
+
+function buildDepthRingItems(
+	ids: string[],
+	positions: Map<string, RadialPoint>,
+	graph: VisibleWorldGraph,
+	nodeGap: number,
+	maxDegree: number,
+	incidentPressureByNode: Map<string, number>,
+	childrenByParent: Map<string, string[]>,
+	metrics: Map<string, Metric>,
+): RingItem[] {
+	const items: RingItem[] = [];
+	for (const id of ids) {
+		const point = positions.get(id);
+		const node = graph.nodesById.get(id);
+		if (!point || !node) continue;
+		const depth = Math.max(0, Math.round(point.depth || 0));
+		const visualRadius = nodeRadius(node, maxDegree, incidentPressureByNode.get(id) ?? 0);
+		const labelDemand = labelCollisionPadding(node) + labelArcPadding(node) * clamp(0.56 + Math.min(1, depth / 5) * 0.44, 0.56, 1);
+		const arcDemand = visualRadius * 2.9 + labelDemand * 2.85 + Math.max(26, nodeGap * 0.26);
+		const currentAngle = normalizeAngle(Number.isFinite(point.angle) ? point.angle : Math.atan2(point.y, point.x));
+		const parentPoint = node.parentId !== null && node.parentId !== undefined ? positions.get(node.parentId) : null;
+		const parentDepth = parentPoint ? Math.max(0, Math.round(parentPoint.depth || 0)) : -1;
+		const parentAngle = parentPoint && Number.isFinite(parentPoint.angle) ? normalizeAngle(parentPoint.angle) : currentAngle;
+		const parentIsRoot = Boolean(parentPoint && parentDepth <= 0);
+		const parentId = node.parentId ?? null;
+		const preferred = parentPoint && parentDepth > 0 ? blendAngles(currentAngle, parentAngle, 0.16) : currentAngle;
+		const parentSectorSpan = clamp(parentPoint?.sectorSpan ?? Math.PI * 2, 0.024, Math.PI * 2);
+		const sectorSpan = clamp(point.sectorSpan ?? 0, 0, Math.PI * 2);
+		const fanWeight = subtreeFanWeight(id, depth, childrenByParent, metrics);
+		items.push({ id, node, point, depth, parentId, parentAngle, visualRadius, arcDemand, preferred, parentSectorSpan, sectorSpan, fanWeight, parentIsRoot });
+	}
+	return items;
+}
+
+function buildParentRingGroups(items: RingItem[], radius: number, nodeGap: number): ParentRingGroup[] {
+	const groupsByParent = new Map<string, RingItem[]>();
+	for (const item of items) {
+		const key = item.parentId ?? item.id;
+		const list = groupsByParent.get(key);
+		if (list) list.push(item);
+		else groupsByParent.set(key, [item]);
+	}
+
+	const groups: ParentRingGroup[] = [];
+	for (const [parentId, groupItems] of groupsByParent.entries()) {
+		const rawParentAngle = averageAngles(groupItems.map((item) => item.parentAngle), groupItems[0]?.parentAngle ?? 0);
+		const preferredFanCenter = averageAngles(groupItems.map((item) => item.preferred), rawParentAngle);
+		const rootLevelSpread = isRootLevelSpreadGroup(groupItems);
+		const parentAngle = rootLevelSpread ? preferredFanCenter : rawParentAngle;
+		const preferred = rootLevelSpread ? preferredFanCenter : blendAngles(preferredFanCenter, parentAngle, 0.68);
+		const sectorSpan = rootLevelSpread ? Math.PI * 2 : clamp(groupItems[0]?.parentSectorSpan ?? Math.PI * 0.86, 0.024, Math.PI * 2);
+		const arcDemand = groupItems.reduce((sum, item) => sum + item.arcDemand, 0);
+		const fanWeight = groupItems.reduce((sum, item) => sum + Math.max(1, item.fanWeight || 1), 0);
+		const group: ParentRingGroup = {
+			parentId,
+			parentAngle,
+			preferred,
+			arcDemand,
+			fanWeight,
+			span: estimateParentGroupSpan(groupItems, radius, nodeGap, parentAngle, sectorSpan),
+			center: preferred,
+			sectorSpan,
+			items: groupItems.slice().sort((a, b) => compareLayoutNode(a.node, b.node)),
+		};
+		groups.push(group);
+	}
+	return rotateGroupsByLargestGap(groups.sort((a, b) => normalizeAngle(a.preferred) - normalizeAngle(b.preferred)));
+}
+
+function estimateParentGroupSpan(items: RingItem[], radius: number, nodeGap: number, parentAngle: number, availableSpan: number): number {
+	const totalDemand = items.reduce((sum, item) => sum + item.arcDemand, 0);
+	const itemGap = Math.max(0, items.length - 1) * Math.max(8, nodeGap * 0.18);
+	const rawSpan = (totalDemand + itemGap) / Math.max(1, radius);
+	const inheritedSpread = angularSpreadAround(parentAngle, items.map((item) => item.preferred));
+	const minSpan = items.length <= 1 ? 0.045 : items.length <= 4 ? 0.12 : 0.18;
+	return clamp(Math.max(rawSpan * 1.08, inheritedSpread * 1.14), minSpan, maxParentAlignedSpan(items, availableSpan));
+}
+
+function rotateGroupsByLargestGap(groups: ParentRingGroup[]): ParentRingGroup[] {
+	if (groups.length <= 2) return groups;
+	let largestGap = -1;
+	let largestGapIndex = 0;
+	for (let index = 0; index < groups.length; index++) {
+		const current = normalizeAngle(groups[index]?.preferred ?? 0);
+		const next = normalizeAngle(groups[(index + 1) % groups.length]?.preferred ?? 0) + (index === groups.length - 1 ? Math.PI * 2 : 0);
+		const gap = next - current;
+		if (gap > largestGap) {
+			largestGap = gap;
+			largestGapIndex = index;
+		}
+	}
+	const start = (largestGapIndex + 1) % groups.length;
+	return groups.slice(start).concat(groups.slice(0, start));
+}
+
+function assignParentRingSectors(groups: ParentRingGroup[], radius: number, nodeGap: number): void {
+	if (groups.length === 0) return;
+	const fullCircle = Math.PI * 2;
+	const gap = groups.length > 1 ? clamp(nodeGap / Math.max(1, radius) * 0.34, 0.012, 0.07) : 0;
+	if (groups.length === 1) {
+		const group = groups[0]!;
+		const anchor = parentRingGroupAnchor(group);
+		const inheritedSpread = angularSpreadAround(anchor, group.items.map((item) => item.preferred));
+		const densitySpan = group.span * clamp(Math.sqrt(group.items.length || 1), 1, 1.18);
+		const subtreeUse = group.sectorSpan * (isRootLevelSpreadGroup(group.items) ? 0.995 : sectorUseForGroup(group.items));
+		group.span = clamp(Math.max(group.span, densitySpan, inheritedSpread * 1.16, subtreeUse), 0.08, maxSingleParentAlignedSpan(group.items, group.sectorSpan));
+		group.center = normalizeAngle(anchor);
+		return;
+	}
+	assignParentAnchoredRingSectors(groups, gap, fullCircle);
+}
+
+function placeAlignedGroupItems(
+	group: ParentRingGroup,
+	groupIndex: number,
+	baselineRadius: number,
+	laneGap: number,
+	spacing: SpacingProfile,
+	nodeGap: number,
+): number {
+	const sectorStart = group.center - group.span / 2;
+	const sectorEnd = group.center + group.span / 2;
+	const placements = fanGroupItemAngles(group.items, group.center, sectorStart, sectorEnd, baselineRadius, nodeGap);
+	const rootLevelSpread = isRootLevelSpreadGroup(group.items);
+	const laneIndexes = rootLevelSpread ? new Map<string, number>() : assignFanLaneIndexes(placements, baselineRadius, group.span, nodeGap);
+	const parentOffsets = [0, -0.22, 0.22, -0.38, 0.38, -0.1, 0.1];
+	const parentOffset = rootLevelSpread ? 0 : (parentOffsets[groupIndex % parentOffsets.length] ?? 0);
+	let outerRadius = baselineRadius;
+	for (const placement of placements) {
+		const kind = nodeKindKey(placement.item.node);
+		const laneIndex = laneIndexes.get(placement.item.id) ?? 0;
+		const radius = radiusForLaneBucket(kind, laneIndex, parentOffset, baselineRadius, laneGap, spacing);
+		outerRadius = Math.max(outerRadius, radius);
+		setAlignedPoint(placement.item, radius, placement.angle, placement.sectorStart, placement.sectorEnd);
+	}
+	return outerRadius;
+}
+
+function fanGroupItemAngles(
+	items: RingItem[],
+	center: number,
+	sectorStart: number,
+	sectorEnd: number,
+	radius: number,
+	nodeGap: number,
+): FanPlacement[] {
+	if (!items.length) return [];
+	const span = Math.max(0.018, sectorEnd - sectorStart);
+	const pad = Math.min(span * 0.1, clamp(nodeGap / Math.max(1, radius) * 0.28, 0.008, 0.07));
+	const start = sectorStart + pad;
+	const end = sectorEnd - pad;
+	const available = Math.max(0.012, end - start);
+	const ordered = orderGroupItemsForFan(items, center);
+	if (ordered.length === 1) return [{ item: ordered[0]!, angle: normalizeAngle(center), sectorStart, sectorEnd }];
+
+	const visualWidths = ordered.map((item) => Math.max(0.004, item.arcDemand / Math.max(1, radius)));
+	const fanWeights = ordered.map((item, index) =>
+		Math.max(
+			visualWidths[index] ?? 0.004,
+			item.sectorSpan > 0 ? item.sectorSpan : 0,
+			Math.pow(Math.max(1, item.fanWeight || 1), 1.12),
+		),
+	);
+	const visualDemand = visualWidths.reduce((sum, width) => sum + width, 0);
+	const minGap = clamp(nodeGap / Math.max(1, radius) * 0.16, 0.006, 0.04);
+	const gapTotal = minGap * Math.max(0, ordered.length - 1);
+	const availableForItems = Math.max(0.012, available - gapTotal);
+	if (visualDemand <= availableForItems) {
+		const totalFanWeight = Math.max(1, fanWeights.reduce((sum, width) => sum + width, 0));
+		const extra = Math.max(0, availableForItems - visualDemand);
+		const placements: FanPlacement[] = [];
+		let cursor = start;
+		for (let index = 0; index < ordered.length; index++) {
+			const width = (visualWidths[index] ?? 0.004) + extra * ((fanWeights[index] ?? 1) / totalFanWeight);
+			const slotStart = cursor;
+			const slotEnd = cursor + width;
+			placements.push({
+				item: ordered[index]!,
+				angle: normalizeAngle(cursor + width / 2),
+				sectorStart: index === 0 ? sectorStart : Math.max(sectorStart, slotStart - minGap / 2),
+				sectorEnd: index === ordered.length - 1 ? sectorEnd : Math.min(sectorEnd, slotEnd + minGap / 2),
+			});
+			cursor += width + minGap;
+		}
+		return placements;
+	}
+
+	return assignPlacementSectors(
+		ordered.map((item, index) => ({
+			item,
+			angle: start + (available * (index + 0.5)) / ordered.length,
+		})),
+		sectorStart,
+		sectorEnd,
+	);
+}
+
+function assignPlacementSectors(
+	placements: { item: RingItem; angle: number }[],
+	sectorStart: number,
+	sectorEnd: number,
+): FanPlacement[] {
+	if (!placements.length) return [];
+	const ordered = placements.slice().sort((a, b) => a.angle - b.angle);
+	return ordered.map((placement, index) => {
+		const previousAngle = ordered[index - 1]?.angle;
+		const nextAngle = ordered[index + 1]?.angle;
+		const start = index === 0 || !Number.isFinite(previousAngle) ? sectorStart : ((previousAngle as number) + placement.angle) / 2;
+		const end = index === ordered.length - 1 || !Number.isFinite(nextAngle) ? sectorEnd : (placement.angle + (nextAngle as number)) / 2;
+		return {
+			item: placement.item,
+			angle: normalizeAngle(placement.angle),
+			sectorStart: Math.max(sectorStart, Math.min(start, sectorEnd)),
+			sectorEnd: Math.max(sectorStart, Math.min(end, sectorEnd)),
+		};
+	});
+}
+
+function orderGroupItemsForFan(items: RingItem[], center: number): RingItem[] {
+	return items.slice().sort((a, b) => {
+		const aSectorStart = Number.isFinite(a.point.sectorStart) ? a.point.sectorStart! : a.preferred;
+		const bSectorStart = Number.isFinite(b.point.sectorStart) ? b.point.sectorStart! : b.preferred;
+		const sectorOrder = aSectorStart - bSectorStart;
+		if (Math.abs(sectorOrder) > 0.0001) return sectorOrder;
+		const angleOrder = shortestAngleDelta(center, a.preferred) - shortestAngleDelta(center, b.preferred);
+		return angleOrder || compareLayoutNode(a.node, b.node);
+	});
+}
+
+function assignFanLaneIndexes(
+	placements: { item: RingItem; angle: number }[],
+	radius: number,
+	sectorSpan: number,
+	nodeGap: number,
+): Map<string, number> {
+	const laneIndexes = new Map<string, number>();
+	const byKind = new Map<string, { item: RingItem; angle: number }[]>();
+	for (const placement of placements) {
+		const kind = nodeKindKey(placement.item.node);
+		const list = byKind.get(kind);
+		if (list) list.push(placement);
+		else byKind.set(kind, [placement]);
+	}
+	for (const kindPlacements of byKind.values()) {
+		const laneCapacity = Math.max(nodeGap * 2.2, radius * Math.max(0.18, sectorSpan * 0.82));
+		let laneIndex = 0;
+		let laneDemand = 0;
+		for (const placement of kindPlacements) {
+			const itemDemand = placement.item.arcDemand + Math.max(8, nodeGap * 0.14);
+			if (laneDemand > 0 && laneDemand + itemDemand > laneCapacity) {
+				laneIndex++;
+				laneDemand = 0;
+			}
+			laneIndexes.set(placement.item.id, laneIndex);
+			laneDemand += itemDemand;
+		}
+	}
+	return laneIndexes;
+}
+
+function maxParentAlignedSpan(items: RingItem[], availableSpan = Math.PI * 0.86): number {
+	if (isRootLevelSpreadGroup(items)) return Math.PI * 2;
+	const count = Math.max(1, items.length);
+	const base = count <= 1 ? 0.42 : count <= 4 ? 0.86 : 1.02;
+	const densityLift = Math.log2(count) * 0.22;
+	const inheritedMax = clamp(availableSpan * 0.98, Math.PI * 0.86, Math.PI * 2);
+	const sectorDemand = availableSpan * sectorUseForGroup(items);
+	return clamp(Math.max(base + densityLift, sectorDemand), base, inheritedMax);
+}
+
+function maxSingleParentAlignedSpan(items: RingItem[], availableSpan = Math.PI * 2): number {
+	if (isRootLevelSpreadGroup(items)) return Math.PI * 2;
+	const count = Math.max(1, items.length);
+	if (availableSpan > Math.PI * 1.16 && count > 3) return Math.min(Math.PI * 2, availableSpan * 0.98);
+	const extra = count > 48 ? 1.38 : count > 18 ? 1.22 : count > 8 ? 1.12 : 1.04;
+	return clamp(maxParentAlignedSpan(items, availableSpan) * extra, 0.46, Math.min(Math.PI * 2, availableSpan * 0.98));
+}
+
+function angularSpreadAround(center: number, angles: number[]): number {
+	if (!angles.length) return 0;
+	let min = Infinity;
+	let max = -Infinity;
+	for (const angle of angles) {
+		const delta = shortestAngleDelta(center, angle);
+		min = Math.min(min, delta);
+		max = Math.max(max, delta);
+	}
+	if (!Number.isFinite(min) || !Number.isFinite(max)) return 0;
+	return Math.max(0, max - min);
+}
+
+function assignParentAnchoredRingSectors(groups: ParentRingGroup[], gap: number, fullCircle: number): void {
+	const ordered = orderParentRingSectorEntries(groups, fullCircle);
+	const usableCircle = Math.max(0.12, fullCircle - gap * groups.length);
+	const totalWeight = Math.max(1, ordered.reduce((sum, entry) => sum + entry.weight, 0));
+	for (const entry of ordered) {
+		if (entry.parentAnchored) continue;
+		const fairSpan = usableCircle * (entry.weight / totalWeight);
+		entry.desiredSpan = clamp(Math.max(entry.desiredSpan, fairSpan * 0.92), entry.minSpan, entry.maxSpan);
+	}
+
+	const desiredTotal = ordered.reduce((sum, entry) => sum + entry.desiredSpan, 0);
+	if (desiredTotal > usableCircle) {
+		const minTotal = ordered.reduce((sum, entry) => sum + entry.minSpan, 0);
+		const shrinkable = Math.max(0.001, desiredTotal - minTotal);
+		const budget = Math.max(minTotal, usableCircle);
+		for (const entry of ordered) {
+			const extra = Math.max(0, entry.desiredSpan - entry.minSpan);
+			entry.group.span = entry.minSpan + extra * ((budget - minTotal) / shrinkable);
+		}
+	} else {
+		for (const entry of ordered) entry.group.span = entry.desiredSpan;
+		let spare = usableCircle - desiredTotal;
+		for (let pass = 0; pass < 3 && spare > 0.001; pass++) {
+			const expandable = ordered.filter((entry) => !entry.parentAnchored && entry.group.span < entry.maxSpan - 0.001);
+			if (!expandable.length) break;
+			const expandableWeight = Math.max(1, expandable.reduce((sum, entry) => sum + entry.weight, 0));
+			let spent = 0;
+			for (const entry of expandable) {
+				const add = Math.min(entry.maxSpan - entry.group.span, spare * (entry.weight / expandableWeight));
+				entry.group.span += add;
+				spent += add;
+			}
+			spare -= spent;
+			if (spent <= 0.001) break;
+		}
+	}
+
+	const allocatedTotal = ordered.reduce((sum, entry) => sum + entry.group.span, 0);
+	const distributedGap = Math.max(gap, (fullCircle - allocatedTotal) / groups.length);
+	const relativeCenters: number[] = [];
+	let cursor = distributedGap / 2;
+	for (const entry of ordered) {
+		cursor += entry.group.span / 2;
+		relativeCenters.push(cursor);
+		cursor += entry.group.span / 2 + distributedGap;
+	}
+	const anchors = unwrapAngles(ordered.map((entry) => entry.anchor), fullCircle);
+	const offset = weightedAverage(
+		ordered.map((entry, index) => (anchors[index] ?? entry.anchor) - (relativeCenters[index] ?? 0)),
+		ordered.map((entry) => entry.weight),
+	);
+	for (let index = 0; index < ordered.length; index++) {
+		const entry = ordered[index];
+		if (!entry) continue;
+		const allocatedCenter = normalizeAngle(offset + (relativeCenters[index] ?? 0));
+		entry.group.center = entry.anchorPull > 0 ? blendAngles(allocatedCenter, entry.anchor, entry.anchorPull) : allocatedCenter;
+	}
+}
+
+function orderParentRingSectorEntries(groups: ParentRingGroup[], fullCircle: number): ParentRingSectorEntry[] {
+	const sorted = groups
+		.map((group) => ({ group, anchor: normalizeAngle(parentRingGroupAnchor(group)) }))
+		.sort((a, b) => a.anchor - b.anchor);
+	if (sorted.length > 2) {
+		let largestGap = -1;
+		let largestGapIndex = 0;
+		for (let index = 0; index < sorted.length; index++) {
+			const current = sorted[index]?.anchor ?? 0;
+			const next = (sorted[(index + 1) % sorted.length]?.anchor ?? 0) + (index === sorted.length - 1 ? fullCircle : 0);
+			const angleGap = next - current;
+			if (angleGap > largestGap) {
+				largestGap = angleGap;
+				largestGapIndex = index;
+			}
+		}
+		const start = (largestGapIndex + 1) % sorted.length;
+		sorted.splice(0, sorted.length, ...sorted.slice(start).concat(sorted.slice(0, start)));
+	}
+	const totalFanWeight = Math.max(1, sorted.reduce((sum, entry) => sum + Math.max(1, entry.group.fanWeight || 1), 0));
+	return sorted.map((entry) => {
+		const group = entry.group;
+		const inheritedSpread = angularSpreadAround(entry.anchor, group.items.map((item) => item.preferred));
+		const count = Math.max(1, group.items.length);
+		const parentAnchored = shouldKeepGroupParentAnchored(group);
+		const minSpan = count <= 1 ? 0.045 : count <= 4 ? 0.1 : 0.15;
+		const weight = parentAnchored ? Math.max(0.08, group.arcDemand / 620) : Math.max(1, group.fanWeight || 1, group.arcDemand / 140);
+		const fairSpan = fullCircle * (Math.max(1, group.fanWeight || 1) / totalFanWeight);
+		const carriedSpan = Math.max(group.sectorSpan, fairSpan * 1.42, group.span * 1.24);
+		const compactMaxSpan = compactLocalGroupMaxSpan(group);
+		const fairUse = Number.isFinite(compactMaxSpan) ? 0.54 : 0.86;
+		const desiredSpan = parentAnchored ? Math.max(group.span, inheritedSpread * 1.02, minSpan) : Math.max(
+			group.span * (count > 8 ? 1.1 : 1.04),
+			inheritedSpread * 1.12,
+			fairSpan * fairUse,
+			group.sectorSpan * sectorUseForGroup(group.items),
+		);
+		const broadMaxSpan = clamp(
+			Math.max(maxSingleParentAlignedSpan(group.items, carriedSpan), fairSpan * 1.52, group.span * 1.36),
+			minSpan,
+			sorted.length <= 2 ? fullCircle * 0.985 : fullCircle * 0.92,
+		);
+		const maxSpan = parentAnchored
+			? clamp(Math.max(minSpan, group.span * 1.08, inheritedSpread * 1.08), minSpan, Math.PI * 0.42)
+			: Math.min(broadMaxSpan, compactMaxSpan);
+		return {
+			group,
+			anchor: entry.anchor,
+			minSpan: Math.min(minSpan, maxSpan),
+			desiredSpan: clamp(desiredSpan, Math.min(minSpan, maxSpan), maxSpan),
+			maxSpan,
+			weight,
+			parentAnchored,
+			anchorPull: parentAnchored ? 1 : Number.isFinite(compactMaxSpan) ? 0.82 : 0,
+		};
+	});
+}
+
+function compactLocalGroupMaxSpan(group: ParentRingGroup): number {
+	const count = group.items.length;
+	if (count <= 1 || count > 8) return Infinity;
+	const maxItemFan = Math.max(...group.items.map((item) => Math.max(1, item.fanWeight || 1)));
+	const averageFan = group.fanWeight / Math.max(1, count);
+	if (maxItemFan > 7.2 || averageFan > 5.8) return Infinity;
+	if (count <= 3) return Math.PI * 0.46;
+	if (count <= 4) return Math.PI * 0.54;
+	return Math.PI * 0.68;
+}
+
+function shouldKeepGroupParentAnchored(group: ParentRingGroup): boolean {
+	if (group.items.length !== 1) return false;
+	const item = group.items[0];
+	if (!item) return false;
+	if (item.fanWeight > 2.35) return false;
+	if ((item.sectorSpan ?? 0) > Math.PI * 0.44) return false;
+	return true;
+}
+
+function sectorUseForGroup(items: RingItem[]): number {
+	const count = Math.max(1, items.length);
+	if (isRootLevelSpreadGroup(items)) return count <= 1 ? 0.08 : 0.92;
+	if (count <= 1) {
+		const fanWeight = Math.max(1, items[0]?.fanWeight ?? 1);
+		if (fanWeight > 12) return 0.96;
+		if (fanWeight > 5) return 0.82;
+		if (fanWeight > 2.4) return 0.52;
+		return 0.16;
+	}
+	if (count <= 2) return 0.82;
+	if (count <= 4) return 0.9;
+	return 0.96;
+}
+
+function parentRingGroupAnchor(group: ParentRingGroup): number {
+	return isRootLevelSpreadGroup(group.items) ? group.preferred : group.parentAngle;
+}
+
+function unwrapAngles(angles: number[], fullCircle: number): number[] {
+	if (!angles.length) return [];
+	const unwrapped = [normalizeAngle(angles[0] ?? 0)];
+	for (let index = 1; index < angles.length; index++) {
+		let angle = normalizeAngle(angles[index] ?? 0);
+		while (angle < (unwrapped[index - 1] ?? 0)) angle += fullCircle;
+		unwrapped.push(angle);
+	}
+	return unwrapped;
+}
+
+function isRootLevelSpreadGroup(items: RingItem[]): boolean {
+	const maxDepth = Math.max(...items.map((item) => item.depth), 1);
+	return maxDepth <= 1 && items.every((item) => item.parentIsRoot);
+}
+
+function radiusForLaneBucket(
+	kind: string,
+	laneIndex: number,
+	parentOffset: number,
+	baselineRadius: number,
+	laneGap: number,
+	spacing: SpacingProfile,
+): number {
+	const kindOffsets: Record<string, number> = {
+		folder: -0.34,
+		note: 0.08,
+		unresolved: 0.42,
+		external: 0.58,
+	};
+	const kindOffset = kindOffsets[kind] ?? 0.12;
+	const direction = kind === 'folder' ? -1 : 1;
+	const laneOffset = kindOffset + parentOffset * 0.72 + laneIndex * 0.54 * direction;
+	const minRadius = Math.max(1, baselineRadius - spacing.ringGap * 0.22);
+	return Math.max(minRadius, baselineRadius + laneOffset * laneGap);
+}
+
+function setAlignedPoint(item: RingItem, radius: number, angle: number, sectorStart?: number, sectorEnd?: number): void {
+	const normalized = normalizeAngle(angle);
+	const point = item.point;
+	point.x = Math.cos(normalized) * radius;
+	point.y = Math.sin(normalized) * radius;
+	point.radius = radius;
+	point.ringRadius = radius;
+	point.ringBandMin = radius;
+	point.ringBandMax = radius;
+	point.angle = normalized;
+	if (Number.isFinite(sectorStart) && Number.isFinite(sectorEnd) && (sectorEnd as number) > (sectorStart as number)) {
+		setPointSector(point, sectorStart as number, sectorEnd as number);
+	} else if (point.sectorSpan && point.sectorSpan > 0) {
+		const span = clamp(point.sectorSpan, 0.024, Math.PI * 2);
+		setPointSector(point, normalized - span / 2, normalized + span / 2);
+	}
+}
+
+function nodeKindKey(node: WorldNode): string {
+	if (node.type === 'external' || node.externalProxy) return 'external';
+	if (node.type === 'unresolved') return 'unresolved';
+	if (node.type === 'folder') return 'folder';
+	return 'note';
+}
+
 function adaptiveLayoutSpacing(
 	graph: VisibleWorldGraph,
 	normalIds: Set<string>,
@@ -721,7 +1552,7 @@ function adaptiveLayoutSpacing(
 	const combinedPressure = averagePressure + Math.sqrt(Math.max(0, hubPressure)) * 0.58 + Math.min(1.6, overlayDensity) * 0.3 + (externalPressure / visibleNodeCount) * 0.32;
 	const pressureRoot = Math.sqrt(Math.max(0, combinedPressure));
 	const nodeFactor = clamp(1.2 + pressureRoot * 0.92 + Math.min(0.86, averagePressure * 0.105), 1.2, 5.8);
-	const ringFactor = clamp(1.08 + pressureRoot * 0.34 + Math.min(0.34, averagePressure * 0.044), 1.08, 2.15);
+	const ringFactor = clamp(0.84 + pressureRoot * 0.24 + Math.min(0.24, averagePressure * 0.032), 0.72, 1.72);
 	const fanFactor = clamp(0.62 + pressureRoot * 0.24 + Math.min(0.3, overlayDensity * 0.17), 0.62, 1.35);
 	const routeGapFactor = clamp(0.9 + pressureRoot * 0.38 + Math.min(0.42, overlayDensity * 0.2), 0.9, 2.55);
 	const countExpansion = Math.max(0, Math.log2(density.normalCount / 520)) * 0.035;
@@ -731,11 +1562,11 @@ function adaptiveLayoutSpacing(
 	return {
 		baseRingGap,
 		baseNodeGap,
-		ringGap: clamp(baseRingGap * ringFactor, MIN_RING_SPACING, 4200),
+		ringGap: clamp(baseRingGap * ringFactor, MIN_RING_SPACING, 3400),
 		nodeGap: clamp(baseNodeGap * nodeFactor, 86, 860),
 		branchFanSpan: Math.PI * fanFactor,
 		routeGapFactor,
-		radiusExpansion: clamp(1 + countExpansion + ringExpansion + averageRingExpansion + pressureExpansion, 1, 1.56),
+		radiusExpansion: clamp(1 + countExpansion * 0.72 + ringExpansion * 0.68 + averageRingExpansion * 0.64 + pressureExpansion, 1, 1.36),
 		ringCountsByDepth: density.countsByDepth,
 		maxDensityDepth: density.maxDepth,
 		incidentPressureByNode,
@@ -933,25 +1764,38 @@ function makePoint(radius: number, angle: number, depth: number, nodeRadiusValue
 	};
 }
 
-function nodeRadius(node: WorldNode | undefined, maxDegree: number): number {
+function setPointSector(point: RadialPoint, start: number, end: number): void {
+	const span = clamp(Math.max(0, end - start), 0.024, Math.PI * 2);
+	const center = start + span / 2;
+	point.sectorStart = center - span / 2;
+	point.sectorEnd = center + span / 2;
+	point.sectorSpan = span;
+}
+
+function nodeRadius(node: WorldNode | undefined, maxDegree: number, incidentPressure = 0): number {
 	if (!node) return 3.6;
-	const degree = Math.max(0, (node.linkCount || 0) + (node.backlinkCount || 0));
-	const degreeRatio = Math.log1p(degree) / Math.max(1, Math.log1p(maxDegree || 1));
+	const storedDegree = Math.max(0, (node.linkCount || 0) + (node.backlinkCount || 0));
+	const pressureDegree = Math.max(0, incidentPressure * 0.62);
+	const degree = Math.max(storedDegree, pressureDegree);
+	const degreeScale = Math.max(1, maxDegree || 1, degree);
+	const degreeRatio = Math.log1p(degree) / Math.max(1, Math.log1p(degreeScale));
 	const clampedRatio = clamp(degreeRatio, 0, 1);
-	const degreeCurve = Math.pow(clampedRatio, 0.48);
-	const hubCurve = Math.pow(clampedRatio, 1.32);
-	const degreeBoost = degreeCurve * 19 + hubCurve * 20 + Math.log2(degree + 1) * 1.35 + Math.sqrt(degree) * 0.32;
-	if (node.externalProxy) return node.type === 'unresolved' ? 5.4 : Math.min(27, 5.8 + degreeBoost * 0.62);
+	const degreeCurve = degree > 0 ? Math.pow(clampedRatio, 0.58) : 0;
+	const hubCurve = Math.pow(clampedRatio, 1.82);
+	const degreeBoost = degreeCurve * 22 + hubCurve * 30 + Math.log2(degree + 1) * 2.15 + Math.sqrt(degree) * 0.42;
+	if (node.externalProxy) return node.type === 'unresolved' ? Math.min(17, 4.5 + degreeBoost * 0.42) : Math.min(30, 4.8 + degreeBoost * 0.58);
 	if (node.type === 'folder') {
 		const noteSignal = Math.log2((node.noteCount || node.descendantCount || 1) + 1);
-		return Math.min(66, 7 + noteSignal * 1.05 + degreeBoost * 1.18);
+		const contextBoost = Math.min(5.8, noteSignal * 0.54);
+		return Math.min(64, 5.8 + contextBoost + degreeBoost * 0.94);
 	}
 	if (node.type === 'external') {
 		const noteSignal = Math.log2((node.noteCount || 1) + 1);
-		return Math.min(38, 5.8 + noteSignal * 0.72 + degreeBoost * 0.9);
+		const contextBoost = Math.min(4.2, noteSignal * 0.42);
+		return Math.min(42, 4.8 + contextBoost + degreeBoost * 0.82);
 	}
-	if (node.type === 'unresolved') return Math.min(16, 4.2 + degreeBoost * 0.5);
-	return Math.min(58, 3.6 + degreeBoost * 1.05);
+	if (node.type === 'unresolved') return Math.min(17, 3.8 + degreeBoost * 0.48);
+	return Math.min(62, 3.4 + degreeBoost * 1.02);
 }
 
 function maxLinkDegree(nodes: WorldNode[]): number {
@@ -1304,6 +2148,19 @@ function medianNumber(values: number[], fallback: number): number {
 	if (!numbers.length) return fallback;
 	const middle = Math.floor(numbers.length / 2);
 	return numbers.length % 2 ? (numbers[middle] ?? fallback) : ((numbers[middle - 1] ?? fallback) + (numbers[middle] ?? fallback)) / 2;
+}
+
+function weightedAverage(values: number[], weights: number[]): number {
+	let total = 0;
+	let weighted = 0;
+	for (let index = 0; index < values.length; index++) {
+		const value = values[index];
+		if (!Number.isFinite(value)) continue;
+		const weight = Math.max(0.001, Number.isFinite(weights[index]) ? weights[index]! : 1);
+		weighted += value! * weight;
+		total += weight;
+	}
+	return total > 0 ? weighted / total : 0;
 }
 
 function clamp(value: number, min: number, max: number): number {

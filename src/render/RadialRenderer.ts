@@ -62,45 +62,45 @@ interface RadialPalette {
 const PALETTES: Record<RadialResolvedScheme, RadialPalette> = {
 	day: {
 		bg: '#f7f8fb',
-		ring: '#94a3b8',
-		tree: '#5b677a',
-		link: '#525e70',
-		external: '#5b5fe0',
-		externalLink: '#cb7622',
+		ring: '#7b8796',
+		tree: '#5f6b7a',
+		link: '#647083',
+		external: '#6d63d9',
+		externalLink: '#b8661f',
 		unresolved: '#dc2626',
-		focus: '#5368ee',
-		folder: '#3f4a5a',
-		folderMeta: '#4f5ee8',
-		note: '#536073',
-		root: '#4f5ee8',
-		ringOpacity: 0.16,
-		treeOpacity: 0.17,
-		linkOpacity: 0.06,
-		externalLinkOpacity: 0.08,
-		highlightOpacity: 0.9,
-		nodeScale: 0.19,
-		maxLabels: 140,
+		focus: '#6e5cf6',
+		folder: '#4b5563',
+		folderMeta: '#6e5cf6',
+		note: '#6b7280',
+		root: '#6e5cf6',
+		ringOpacity: 0.24,
+		treeOpacity: 0.3,
+		linkOpacity: 0.12,
+		externalLinkOpacity: 0.16,
+		highlightOpacity: 0.94,
+		nodeScale: 0.32,
+		maxLabels: 170,
 	},
 	night: {
-		bg: '#0f1117',
-		ring: '#818cf8',
-		tree: '#818cf8',
-		link: '#94a3b8',
-		external: '#c4b5fd',
-		externalLink: '#fb923c',
+		bg: '#1e1e1e',
+		ring: '#777b85',
+		tree: '#8a8f9c',
+		link: '#8b8f99',
+		external: '#a78bfa',
+		externalLink: '#f59e0b',
 		unresolved: '#fb7185',
-		focus: '#aab6ff',
-		folder: '#d7dae2',
-		folderMeta: '#f59e0b',
-		note: '#a1a8b5',
-		root: '#7c9cff',
-		ringOpacity: 0.15,
-		treeOpacity: 0.18,
-		linkOpacity: 0.065,
-		externalLinkOpacity: 0.09,
+		focus: '#8b7cf6',
+		folder: '#d5d8de',
+		folderMeta: '#c4b5fd',
+		note: '#a8adb7',
+		root: '#a99cff',
+		ringOpacity: 0.22,
+		treeOpacity: 0.28,
+		linkOpacity: 0.12,
+		externalLinkOpacity: 0.16,
 		highlightOpacity: 0.98,
-		nodeScale: 0.19,
-		maxLabels: 260,
+		nodeScale: 0.32,
+		maxLabels: 300,
 	},
 };
 
@@ -231,18 +231,22 @@ export class RadialRenderer {
 		}
 	}
 
-	fitToLayout(): void {
-		if (!this.layout) return;
+	fitToLayout(): boolean {
+		if (!this.layout) return false;
 		const inset = 42;
 		const availableWidth = Math.max(1, this.width - inset);
 		const availableHeight = Math.max(1, this.height - inset);
 		const zoom = Math.min(availableWidth / Math.max(1, this.layout.width), availableHeight / Math.max(1, this.layout.height)) * 1.08;
 		this.setView(this.layout.width / 2, this.layout.height / 2, zoom);
+		return true;
 	}
 
 	playRevealFromRoot(rootId: string, text: string, durMs = 1200): void {
-		if (!this.layout || this.width < 2 || this.height < 2) return;
 		cancelAnimationFrame(this.revealFrame);
+		if (!this.layout || this.width < 2 || this.height < 2) {
+			this.clearRevealMask(false);
+			return;
+		}
 		const root = this.layout.positions.get(rootId) ?? { x: 0, y: 0 };
 		const screen = this.worldToScreen(root.x, root.y);
 		const maxRadius = Math.hypot(Math.max(screen.x, this.width - screen.x), Math.max(screen.y, this.height - screen.y)) + 120;
@@ -260,12 +264,7 @@ export class RadialRenderer {
 				this.revealFrame = window.requestAnimationFrame(step);
 				return;
 			}
-			this.container.removeClass('is-radial-revealing');
-			this.revealOverlay?.addClass('is-fading');
-			window.setTimeout(() => {
-				this.revealOverlay?.remove();
-				this.revealOverlay = null;
-			}, 220);
+			this.clearRevealMask(true);
 		};
 		this.revealFrame = window.requestAnimationFrame(step);
 	}
@@ -357,6 +356,21 @@ export class RadialRenderer {
 		}
 		this.revealOverlay.removeClass('is-fading');
 		this.revealOverlay.setText(text);
+	}
+
+	private clearRevealMask(fade: boolean): void {
+		this.container.removeClass('is-radial-revealing');
+		if (!this.revealOverlay) return;
+		if (!fade) {
+			this.revealOverlay.remove();
+			this.revealOverlay = null;
+			return;
+		}
+		this.revealOverlay.addClass('is-fading');
+		window.setTimeout(() => {
+			this.revealOverlay?.remove();
+			this.revealOverlay = null;
+		}, 220);
 	}
 
 	private applyCamera(): void {
@@ -868,9 +882,9 @@ function labelScreenScale(zoom: number): number {
 
 function nodePointSize(nodeRadius: number, paletteScale: number): number {
 	const radius = Math.max(0, Number.isFinite(nodeRadius) ? nodeRadius : 8);
-	const gentleBase = 2.7 + radius * paletteScale + Math.sqrt(radius) * 0.44;
-	const hubLift = smoothstep(20, 66, radius) * radius * paletteScale * 0.16;
-	return clampNumber(gentleBase + hubLift, 3.4, 24);
+	const gentleBase = 3.9 + radius * paletteScale * 0.86 + Math.sqrt(radius) * 0.48;
+	const hubLift = smoothstep(14, 64, radius) * radius * paletteScale * 0.42;
+	return clampNumber(gentleBase + hubLift, 4.8, 42);
 }
 
 function nodeScreenScale(zoom: number): number {

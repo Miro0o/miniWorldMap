@@ -1,5 +1,5 @@
-// 节点 = 单次 draw call 的 THREE.Points + 发光球 shader（NASA「luminous orb」配方）
-// 深空模式：白热核心 + 软边缘；浅色「晨昼」模式：实心墨水圆盘 + 深色 rim（bloom 关）
+// Nodes are one THREE.Points draw call. Keep them close to the legacy
+// canvas look: filled discs with a visible rim and only a restrained core lift.
 // aDim: 聚焦模式下非邻居淡出（0.12..1）
 
 export const NODE_VERTEX_SHADER = /* glsl */ `
@@ -33,14 +33,13 @@ void main() {
 	vec2 uv = gl_PointCoord - 0.5;
 	float d = length(uv);
 
-	float core = smoothstep(0.18, 0.0, d) * 0.55 * (1.0 - vGhost) * (1.0 - uLightMode);
+	float core = smoothstep(0.16, 0.0, d) * 0.18 * (1.0 - vGhost) * (1.0 - uLightMode);
 	vec3 col = mix(vColor, vec3(1.0), core);
 
-	// 晨昼：外缘 1px 深色 rim，让节点「坐在纸上」
-	float rim = smoothstep(0.40, 0.46, d) * smoothstep(0.50, 0.46, d);
-	col = mix(col, col * 0.72, rim * uLightMode);
+	float rim = smoothstep(0.36, 0.48, d) * smoothstep(0.51, 0.45, d);
+	col = mix(col, col * mix(0.58, 0.68, uLightMode), rim);
 
-	float alpha = smoothstep(0.5, 0.42, d) * mix(1.0, 0.45, vGhost) * vDim;
+	float alpha = smoothstep(0.5, 0.43, d) * mix(1.0, 0.5, vGhost) * vDim;
 	if (alpha < 0.01) discard;
 	gl_FragColor = vec4(col, alpha);
 }
