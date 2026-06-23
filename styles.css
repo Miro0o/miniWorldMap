@@ -536,23 +536,23 @@
 }
 
 .mini-world-map-view.is-day-scheme {
-	--mwm-radial-bg: #f7f8fb;
-	--mwm-radial-text: #1f2937;
-	--mwm-radial-label: #1f2937;
-	--mwm-radial-label-root: #4f5ee8;
+	--mwm-radial-bg: #f8fafc;
+	--mwm-radial-text: #172033;
+	--mwm-radial-label: #172033;
+	--mwm-radial-label-root: #3f7fe8;
 	--mwm-radial-label-shadow: rgba(255, 255, 255, 0.92);
-	--mwm-legend-root-color: #4f5ee8;
-	--mwm-legend-folder-color: #3f4a5a;
-	--mwm-legend-meta-color: #4f5ee8;
-	--mwm-legend-note-color: #536073;
-	--mwm-legend-external-color: #5b5fe0;
-	--mwm-legend-unresolved-color: #dc2626;
-	--mwm-legend-tree-color: #5b677a;
-	--mwm-legend-link-color: #525e70;
-	--mwm-legend-external-link-color: #cb7622;
+	--mwm-legend-root-color: #3f7fe8;
+	--mwm-legend-folder-color: #7f92a8;
+	--mwm-legend-meta-color: #4f8ecb;
+	--mwm-legend-note-color: #a2abb7;
+	--mwm-legend-external-color: #7b6fd6;
+	--mwm-legend-unresolved-color: #dc4a4a;
+	--mwm-legend-tree-color: #93a3b8;
+	--mwm-legend-link-color: #a2acba;
+	--mwm-legend-external-link-color: #c98135;
 	--mwm-floating-bg: rgba(255, 255, 255, 0.82);
-	--mwm-floating-border: rgba(31, 41, 51, 0.16);
-	--mwm-floating-color: #1f2937;
+	--mwm-floating-border: rgba(23, 32, 51, 0.14);
+	--mwm-floating-color: #172033;
 }
 
 .mini-world-map-view.is-night-scheme,
@@ -637,18 +637,24 @@
 	max-width: 160px;
 	padding: 0 3px;
 	color: var(--mwm-radial-label, #f8fafc);
+	font-family: var(--font-interface, system-ui), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 	font-size: 12px;
-	line-height: 1.18;
+	line-height: 1.17;
 	text-align: center;
 	text-shadow: 0 1px 4px var(--mwm-radial-label-shadow, rgba(0, 0, 0, 0.92));
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
+	white-space: normal;
+	overflow: visible;
+	overflow-wrap: anywhere;
+	text-overflow: clip;
 }
 
 .mwm-radial-label.is-root {
 	font-weight: 600;
 	color: var(--mwm-radial-label-root, #aab6ff);
+}
+
+.mwm-radial-label.is-strong {
+	font-weight: 600;
 }
 
 .mwm-radial-label.is-dim {
@@ -1089,6 +1095,12 @@
 .mwm-radial-host.is-radial-revealing .mwm-radial-canvas,
 .mwm-radial-host.is-radial-revealing .mwm-radial-labels {
 	clip-path: circle(var(--mwm-reveal-radius, 0px) at var(--mwm-reveal-x, 50%) var(--mwm-reveal-y, 50%));
+}
+
+.mwm-radial-host.is-radial-preparing .mwm-radial-canvas,
+.mwm-radial-host.is-radial-preparing .mwm-radial-labels {
+	opacity: 0;
+	visibility: hidden;
 }
 
 .mwm-radial-loading {

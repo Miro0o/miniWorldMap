@@ -35,7 +35,7 @@ import {
 	layoutRadialGraph,
 	type RadialLayout,
 } from '../layout/radial/layoutRadial';
-import { RadialRenderer, emptyActiveState, type RadialActiveState, type RadialResolvedScheme } from '../render/RadialRenderer';
+import { MAX_RADIAL_ZOOM, MIN_RADIAL_ZOOM, RadialRenderer, emptyActiveState, type RadialActiveState, type RadialResolvedScheme } from '../render/RadialRenderer';
 import { ROOT_ID, type VisibleGraphState, type VisibleWorldGraph, type WorldEdge, type WorldNode } from '../world/types';
 import { WorldMapIndex } from '../world/WorldMapIndex';
 import { defaultVisibleGraphState } from '../world/visibleGraph';
@@ -81,6 +81,9 @@ export class Radial2DController extends Component {
 	private nextPinId = 1;
 	private nextPinGroupId = 1;
 	private pinGroupName = '';
+	private disposed = false;
+	private startupSettled = false;
+	private rebuildToken = 0;
 	private drag:
 		| { pointerId: number; startX: number; startY: number; centerX: number; centerY: number; moved: boolean }
 		| null = null;
@@ -117,13 +120,26 @@ export class Radial2DController extends Component {
 		this.buildFloatingControls();
 		this.bindRendererEvents();
 		this.registerVaultEvents();
-		this.rebuild('start');
+		this.renderer.showLoadingMask(this.t('loading.radial'));
+		await this.waitForStartupReady();
+		if (this.disposed) return;
+		await this.queueRebuild('start');
+		if (!this.disposed) this.startupSettled = true;
+	}
+
+	onunload(): void {
+		this.disposed = true;
+		super.onunload();
 	}
 
 	resize(): void {
+		this.resizeRenderer(true);
+	}
+
+	private resizeRenderer(allowFit: boolean): void {
 		if (!this.renderer || !this.canvasHost) return;
 		this.renderer.resize(this.canvasHost.clientWidth, this.canvasHost.clientHeight);
-		if (this.needsFit && this.renderer.fitToLayout()) {
+		if (allowFit && this.needsFit && this.renderer.fitToLayout(this.graph?.rootId ?? ROOT_ID)) {
 			this.needsFit = false;
 			return;
 		}
@@ -135,10 +151,23 @@ export class Radial2DController extends Component {
 	}
 
 	rebuild(reason: string): void {
+		void this.queueRebuild(reason);
+	}
+
+	private async queueRebuild(reason: string): Promise<void> {
+		const token = ++this.rebuildToken;
+		await this.rebuildNow(reason, token);
+	}
+
+	private async rebuildNow(reason: string, token: number): Promise<void> {
 		const radial = this.radial();
 		const shouldReveal = ['start', 'manual', 'root', 'focus', 'atlas'].includes(reason);
 		const loadingText = this.t('loading.radial');
-		if (shouldReveal) this.renderer?.showLoadingMask(loadingText);
+		if (shouldReveal) {
+			this.renderer?.showLoadingMask(loadingText);
+			await animationFrames(2);
+			if (this.disposed || token !== this.rebuildToken) return;
+		}
 		this.index.rebuild(radial);
 		this.state.hoverHighlightMode = radial.hoverHighlightMode;
 		this.state.labelVisibility = radial.labelVisibility;
@@ -147,12 +176,14 @@ export class Radial2DController extends Component {
 		this.state.pinNeedsHoverLinks = this.pinnedPathsNeedHoverLinks();
 		this.state.selectedNodeId = this.selectedNodeId;
 		this.state.selectedLink = this.selectedLink;
-		const layoutGraph = this.index.buildVisibleGraph({
-			...this.state,
-		});
+		const preserveView = this.shouldPreserveView(reason) ? this.renderer?.getView() : null;
+		const preserveAnchorId = preserveView ? (this.graph?.rootId ?? this.state.rootPath ?? ROOT_ID) : null;
+		const preserveAnchorPoint = preserveAnchorId !== null ? (this.layout?.positions.get(preserveAnchorId) ?? this.layout?.positions.get(ROOT_ID) ?? null) : null;
+		const renderGraph = this.index.buildVisibleGraph({ ...this.state });
+		const layoutGraph = this.index.buildVisibleGraph(this.legendNeutralLayoutState());
 		const renderHidden = new Set(this.state.hiddenLegendItems);
 		if (!this.state.showLinkOverlay) renderHidden.add('link');
-		const graph = filterLegendGraph(layoutGraph, renderHidden);
+		const graph = filterLegendGraph(renderGraph, renderHidden);
 		this.graph = graph;
 		this.layout = layoutRadialGraph(layoutGraph, {
 			ringSpacing: DEFAULT_RING_SPACING,
@@ -160,15 +191,26 @@ export class Radial2DController extends Component {
 			swirlStrength: radial.swirlStrength,
 		});
 		const renderer = this.renderer;
+		let revealRootId: string | null = null;
 		renderer?.beginRenderBatch();
 		try {
 			renderer?.setTheme(this.resolvedCanvasScheme());
 			renderer?.setData(graph, this.layout, radial.labelVisibility, radial.showRingGuides);
-			this.resize();
+			this.resizeRenderer(!preserveView);
+			if (preserveView) {
+				const nextAnchorPoint = preserveAnchorId !== null ? (this.layout.positions.get(preserveAnchorId) ?? this.layout.positions.get(ROOT_ID) ?? null) : null;
+				const anchorDx = nextAnchorPoint && preserveAnchorPoint ? nextAnchorPoint.x - preserveAnchorPoint.x : 0;
+				const anchorDy = nextAnchorPoint && preserveAnchorPoint ? nextAnchorPoint.y - preserveAnchorPoint.y : 0;
+				renderer?.setView(preserveView.centerX + anchorDx, preserveView.centerY + anchorDy, preserveView.zoom);
+			}
 			this.applyActiveState();
-			if (shouldReveal) renderer?.playRevealFromRoot(graph.rootId, loadingText);
+			if (shouldReveal) revealRootId = graph.rootId;
 		} finally {
 			renderer?.endRenderBatch();
+		}
+		if (shouldReveal && !this.disposed && token === this.rebuildToken) {
+			if (revealRootId !== null) renderer?.playRevealFromRoot(revealRootId, loadingText);
+			else renderer?.clearLoadingMask(true);
 		}
 		this.renderPanel();
 	}
@@ -177,7 +219,22 @@ export class Radial2DController extends Component {
 		return this.settings.radial;
 	}
 
+	private shouldPreserveView(reason: string): boolean {
+		return ['legend', 'link-overlay', 'metadata'].includes(reason);
+	}
+
+	private legendNeutralLayoutState(): VisibleGraphState {
+		return {
+			...this.state,
+			hiddenLegendItems: [],
+			showLinkOverlay: true,
+		};
+	}
+
 	private registerVaultEvents(): void {
+		this.registerEvent(this.app.metadataCache.on('resolved', () => {
+			if (this.startupSettled) this.redrawSoon();
+		}));
 		this.registerEvent(this.app.vault.on('rename', this.redrawSoon));
 		this.registerEvent(this.app.vault.on('delete', this.redrawSoon));
 		this.registerEvent(this.app.vault.on('create', this.redrawSoon));
@@ -186,6 +243,25 @@ export class Radial2DController extends Component {
 				if (file instanceof TFile && file.extension === 'md') this.redrawSoon();
 			}),
 		);
+	}
+
+	private async waitForStartupReady(): Promise<void> {
+		await Promise.race([this.waitForMetadataResolved(), delay(1600)]);
+		await animationFrames(2);
+	}
+
+	private waitForMetadataResolved(): Promise<void> {
+		const cache = this.app.metadataCache;
+		return new Promise((resolve) => {
+			let settled = false;
+			this.registerEvent(
+				cache.on('resolved', () => {
+					if (settled) return;
+					settled = true;
+					resolve();
+				}),
+			);
+		});
 	}
 
 	private bindRendererEvents(): void {
@@ -199,7 +275,7 @@ export class Radial2DController extends Component {
 			const before = renderer.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
 			const view = renderer.getView();
 			const factor = Math.pow(1.45, -event.deltaY / 120);
-			const zoom = Math.min(Math.max(view.zoom * factor, 0.003), 6);
+			const zoom = Math.min(Math.max(view.zoom * factor, MIN_RADIAL_ZOOM), MAX_RADIAL_ZOOM);
 			const afterCenterX = before.x - (event.clientX - rect.left - rect.width / 2) / zoom;
 			const afterCenterY = before.y + (event.clientY - rect.top - rect.height / 2) / zoom;
 			renderer.setView(afterCenterX, afterCenterY, zoom);
@@ -577,7 +653,7 @@ export class Radial2DController extends Component {
 		this.button(row, this.t('view.focus'), () => this.focusActiveNote(), this.state.mode === 'focus');
 		this.button(row, this.t('view.vaultRoot'), () => this.resetToRoot());
 		const row2 = parent.createDiv({ cls: 'galaxy-panel-row' });
-		this.button(row2, this.t('common.fit'), () => this.renderer?.fitToLayout());
+		this.button(row2, this.t('common.fit'), () => this.renderer?.fitToLayout(null));
 		this.button(row2, this.t('common.rebuild'), () => this.rebuild('manual'));
 	}
 
@@ -608,6 +684,7 @@ export class Radial2DController extends Component {
 			const mode = normalizeHoverHighlightMode(value);
 			this.state.hoverHighlightMode = mode;
 			radial.hoverHighlightMode = mode;
+			this.state.pinNeedsHoverLinks = this.pinnedPathsNeedHoverLinks();
 			this.saveSoon();
 			this.rebuild('hover');
 		});
@@ -751,7 +828,7 @@ export class Radial2DController extends Component {
 		});
 		this.iconButton(controls, 'home', this.t('view.vaultRoot'), () => this.resetToRoot());
 		this.iconButton(controls, 'pin', this.t('common.pinCurrent'), () => this.pinCurrent());
-		this.iconButton(controls, 'maximize', this.t('common.fit'), () => this.renderer?.fitToLayout());
+		this.iconButton(controls, 'maximize', this.t('common.fit'), () => this.renderer?.fitToLayout(null));
 		this.iconButton(controls, 'refresh-cw', this.t('common.rebuild'), () => this.rebuild('manual'));
 	}
 
@@ -1088,6 +1165,38 @@ export class Radial2DController extends Component {
 		this.contentEl.removeClass('mwm-radial-mode');
 		this.contentEl.empty();
 	}
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => {
+		window.setTimeout(resolve, ms);
+	});
+}
+
+function animationFrames(count: number): Promise<void> {
+	return new Promise((resolve) => {
+		let done = false;
+		let timer = 0;
+		const finish = () => {
+			if (done) return;
+			done = true;
+			window.clearTimeout(timer);
+			resolve();
+		};
+		timer = window.setTimeout(finish, 96);
+		let remaining = Math.max(0, count);
+		const step = () => {
+			if (done) return;
+			remaining--;
+			if (remaining <= 0) {
+				finish();
+				return;
+			}
+			window.requestAnimationFrame(step);
+		};
+		if (remaining <= 0) finish();
+		else window.requestAnimationFrame(step);
+	});
 }
 
 function addHierarchyHighlights(

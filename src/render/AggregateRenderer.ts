@@ -158,6 +158,9 @@ export class AggregateRenderer {
 			uniforms: {
 				uPixelScale: { value: this.pixelScale },
 				uSizeMul: { value: this.nodeScale },
+				uSizeContrast: { value: 1 },
+				uBasePoint: { value: 0 },
+				uMinPoint: { value: 0 },
 				uLightMode: { value: this.tokens.lightMode ? 1 : 0 },
 				uMaxPoint: { value: 110 * this.renderer.getPixelRatio() },
 			},
