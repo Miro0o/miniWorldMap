@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Add default day/night map background fallbacks when the active Obsidian theme cannot provide a matching background color.
+- Refresh explicit 3D day/night backgrounds after Obsidian CSS changes.
+
 ## 0.2.0
 
 - Add the Galaxy-derived 3D map mode based on [Longwind1984/galaxy-view](https://github.com/Longwind1984/galaxy-view).

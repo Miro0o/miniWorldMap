@@ -1,6 +1,11 @@
 export type ObsidianThemeScheme = 'day' | 'night';
 
-export function resolveObsidianBackground(scheme: ObsidianThemeScheme, fallback: string | number): string {
+export const DEFAULT_MAP_BACKGROUNDS: Record<ObsidianThemeScheme, string> = {
+	day: '#f8fafc',
+	night: '#1e1e1e',
+};
+
+export function resolveObsidianBackground(scheme: ObsidianThemeScheme, fallback: string | number = DEFAULT_MAP_BACKGROUNDS[scheme]): string {
 	const sampled = sampleObsidianBackground(scheme);
 	if (sampled && fitsScheme(sampled, scheme)) return sampled;
 	return colorFallbackToCss(fallback);
@@ -55,16 +60,18 @@ function fitsScheme(color: string, scheme: ObsidianThemeScheme): boolean {
 }
 
 function rgbStringToHex(value: string): string | null {
+	if (value.trim().toLowerCase() === 'transparent') return null;
 	const match = value.match(/^rgba?\((.*)\)$/i);
 	if (!match) return expandHex(value);
 	const parts = match[1]
 		?.replaceAll(',', ' ')
 		.split(/[ /]+/)
 		.map((part) => part.trim())
-		.filter(Boolean)
-		.slice(0, 3);
+		.filter(Boolean);
 	if (!parts || parts.length < 3) return null;
-	const channels = parts.map(parseChannel);
+	const alpha = parts[3] === undefined ? 1 : parseAlpha(parts[3]);
+	if (alpha === null || alpha <= 0.05) return null;
+	const channels = parts.slice(0, 3).map(parseChannel);
 	if (channels.some((channel) => channel === null)) return null;
 	return `#${channels.map((channel) => channel!.toString(16).padStart(2, '0')).join('')}`;
 }
@@ -86,8 +93,21 @@ function parseChannel(value: string): number | null {
 	return Number.isFinite(channel) ? clampByte(channel) : null;
 }
 
+function parseAlpha(value: string): number | null {
+	if (value.endsWith('%')) {
+		const percent = Number.parseFloat(value);
+		return Number.isFinite(percent) ? clampUnit(percent / 100) : null;
+	}
+	const alpha = Number.parseFloat(value);
+	return Number.isFinite(alpha) ? clampUnit(alpha) : null;
+}
+
 function clampByte(value: number): number {
 	return Math.min(255, Math.max(0, Math.round(value)));
+}
+
+function clampUnit(value: number): number {
+	return Math.min(1, Math.max(0, value));
 }
 
 function hexToRgb(value: string): { r: number; g: number; b: number } | null {

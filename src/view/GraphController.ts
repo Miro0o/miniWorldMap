@@ -394,7 +394,7 @@ export class GraphController {
 
 	/** workspace css-change（由视图转发） */
 	onCssChange(): void {
-		if (this.settings.preset === 'auto') this.applyPreset();
+		if (this.settings.preset !== 'deep-space') this.applyPreset();
 	}
 
 	private resolveVisualTokens(): VisualTokens {

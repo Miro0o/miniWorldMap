@@ -300,7 +300,8 @@ export function colorSchemeOptions(language: Language): [ColorScheme, string][] 
 	];
 }
 
-export function languageOptions(_language: Language): [Language, string][] {
+export function languageOptions(language: Language): [Language, string][] {
+	void language;
 	return LANGUAGE_OPTIONS.map(([value, label]) => [value, label]);
 }
 
