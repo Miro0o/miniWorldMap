@@ -18,7 +18,8 @@ import type { RadialLayout, RadialPoint, RadialRoute } from '../layout/radial/la
 import { ROOT_ID, type VisibleWorldGraph, type WorldEdge, type WorldNode } from '../world/types';
 import { NODE_FRAGMENT_SHADER, NODE_VERTEX_SHADER } from './shaders';
 
-export const MIN_RADIAL_ZOOM = 0.0001;
+// Hard floor keeps wheel math and hit-tests finite while still allowing huge complete maps to fit.
+export const MIN_RADIAL_ZOOM = 0.00001;
 export const MAX_RADIAL_ZOOM = 6;
 const NODE_BASE_POINT = 4.8;
 
@@ -70,7 +71,7 @@ const PALETTES: Record<RadialResolvedScheme, RadialPalette> = {
 		tree: '#93a3b8',
 		link: '#a2acba',
 		external: '#7b6fd6',
-		externalLink: '#c98135',
+		externalLink: '#b8752e',
 		unresolved: '#dc4a4a',
 		focus: '#3f7fe8',
 		folder: '#7f92a8',
@@ -80,7 +81,7 @@ const PALETTES: Record<RadialResolvedScheme, RadialPalette> = {
 		ringOpacity: 0.22,
 		treeOpacity: 0.26,
 		linkOpacity: 0.1,
-		externalLinkOpacity: 0.16,
+		externalLinkOpacity: 0.14,
 		highlightOpacity: 0.92,
 		nodeScale: 0.32,
 		maxLabels: 170,
@@ -91,7 +92,7 @@ const PALETTES: Record<RadialResolvedScheme, RadialPalette> = {
 		tree: '#8a8f9c',
 		link: '#8b8f99',
 		external: '#a78bfa',
-		externalLink: '#f59e0b',
+		externalLink: '#d97706',
 		unresolved: '#fb7185',
 		focus: '#8b7cf6',
 		folder: '#d5d8de',
@@ -101,7 +102,7 @@ const PALETTES: Record<RadialResolvedScheme, RadialPalette> = {
 		ringOpacity: 0.22,
 		treeOpacity: 0.28,
 		linkOpacity: 0.12,
-		externalLinkOpacity: 0.16,
+		externalLinkOpacity: 0.14,
 		highlightOpacity: 0.98,
 		nodeScale: 0.32,
 		maxLabels: 300,

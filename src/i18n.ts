@@ -59,6 +59,7 @@ const STRINGS: Record<string, Record<Language, string>> = {
 	'view.atlas': { en: 'Atlas', zh: '图谱' },
 	'view.focus': { en: 'Focus', zh: '聚焦' },
 	'view.vaultRoot': { en: 'Vault root', zh: '库根目录' },
+	'view.completeMap': { en: 'Complete map', zh: '完整地图' },
 	'view.mode': { en: 'Map mode', zh: '地图模式' },
 	'view.theme': { en: 'Theme', zh: '主题' },
 	'theme.auto': { en: 'System', zh: '跟随系统' },

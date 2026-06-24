@@ -155,6 +155,44 @@ describe('visible world graph', () => {
 		expect(graph.focusId).toBe('Atlas/Topic A.md');
 		expect(graph.nodesById.has('Atlas/Sub/Topic B.md')).toBe(true);
 	});
+
+	it('expands the complete root atlas across depth and link budgets', () => {
+		const deepRecords: { path: string; basename: string; kind: 'folder' | 'note' }[] = [
+			{ path: 'Deep', basename: 'Deep', kind: 'folder' },
+		];
+		let current = 'Deep';
+		for (let index = 0; index < 8; index++) {
+			current = `${current}/Layer ${index}`;
+			deepRecords.push({ path: current, basename: `Layer ${index}`, kind: 'folder' });
+		}
+		const deepNote = `${current}/Deep.md`;
+		deepRecords.push({ path: deepNote, basename: 'Deep', kind: 'note' });
+		for (let index = 0; index < 4; index++) {
+			deepRecords.push({ path: `Note ${index}.md`, basename: `Note ${index}`, kind: 'note' });
+		}
+		const resolvedLinks = {
+			[deepNote]: Object.fromEntries(Array.from({ length: 4 }, (_, index) => [`Note ${index}.md`, 1])),
+		};
+		const m = buildWorldMap(deepRecords, resolvedLinks, {}, DEFAULT_RADIAL_SETTINGS);
+		const limitedState = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
+		limitedState.atlasDepth = 1;
+		limitedState.linkLimit = 1;
+		limitedState.showLinkOverlay = true;
+		const limited = buildVisibleWorldGraph(m, limitedState, DEFAULT_RADIAL_SETTINGS);
+
+		const completeState = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
+		completeState.atlasDepth = 1;
+		completeState.linkLimit = 1;
+		completeState.showLinkOverlay = true;
+		completeState.showCompleteRoot = true;
+		const complete = buildVisibleWorldGraph(m, completeState, DEFAULT_RADIAL_SETTINGS);
+
+		expect(limited.nodesById.has(deepNote)).toBe(false);
+		expect(limited.linkEdges).toHaveLength(1);
+		expect(complete.nodesById.has(deepNote)).toBe(true);
+		expect(complete.hiddenNodeCount).toBe(0);
+		expect(complete.linkEdges).toHaveLength(4);
+	});
 });
 
 describe('radial layout', () => {

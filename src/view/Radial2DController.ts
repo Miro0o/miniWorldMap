@@ -165,18 +165,22 @@ export class Radial2DController extends Component {
 
 	private async rebuildNow(reason: string, token: number): Promise<void> {
 		const radial = this.radial();
-		const shouldReveal = ['start', 'manual', 'root', 'focus', 'atlas'].includes(reason);
+		const shouldReveal = ['start', 'manual', 'root', 'focus', 'atlas', 'complete'].includes(reason);
 		const loadingText = this.t('loading.radial');
 		if (shouldReveal) {
 			this.renderer?.showLoadingMask(loadingText);
 			await animationFrames(2);
 			if (this.disposed || token !== this.rebuildToken) return;
 		}
-		this.index.rebuild(radial);
+		const indexSettings = this.state.showCompleteRoot ? { ...radial, includeUnresolvedLinks: true } : radial;
+		this.index.rebuild(indexSettings);
 		this.state.hoverHighlightMode = radial.hoverHighlightMode;
 		this.state.labelVisibility = radial.labelVisibility;
-		this.state.hiddenLegendItems = radial.hiddenLegendItems.slice();
-		this.state.showLinkOverlay = radial.showLinkOverlay || !this.state.hiddenLegendItems.includes('link');
+		if (this.state.showCompleteRoot) this.applyCompleteMapState();
+		else {
+			this.state.hiddenLegendItems = radial.hiddenLegendItems.slice();
+			this.state.showLinkOverlay = radial.showLinkOverlay || !this.state.hiddenLegendItems.includes('link');
+		}
 		this.state.pinNeedsHoverLinks = this.pinnedPathsNeedHoverLinks();
 		this.state.selectedNodeId = this.selectedNodeId;
 		this.state.selectedLink = this.selectedLink;
@@ -488,7 +492,7 @@ export class Radial2DController extends Component {
 			['controls', this.t('tab.controls')],
 			['defaults', this.t('tab.defaults')],
 		] as const) {
-			const button = tabs.createEl('button', { cls: this.activePanelPage === id ? 'is-active' : '', text: label });
+			const button = tabs.createEl('button', { cls: this.activePanelPage === id ? 'is-active' : '', text: label, attr: { title: label } });
 			button.addEventListener('click', () => {
 				this.activePanelPage = id;
 				this.renderPanel();
@@ -504,7 +508,7 @@ export class Radial2DController extends Component {
 
 	private modeButton(parent: HTMLElement, label: string, mode: ViewMode): void {
 		const active = this.settings.viewMode === mode;
-		const button = parent.createEl('button', { cls: active ? 'is-active' : '', text: label });
+		const button = parent.createEl('button', { cls: active ? 'is-active' : '', text: label, attr: { title: label } });
 		button.addEventListener('click', () => this.onViewMode(mode));
 	}
 
@@ -573,7 +577,8 @@ export class Radial2DController extends Component {
 			for (const edge of edges) {
 				const neighbor = this.index.nodes.get(edge[side]);
 				if (!neighbor) continue;
-				const button = parent.createEl('button', { cls: 'mwm-link-row', text: `${neighbor.title} (${edge.weight})` });
+				const label = `${neighbor.title} (${edge.weight})`;
+				const button = parent.createEl('button', { cls: 'mwm-link-row', text: label, attr: { title: label } });
 				button.addEventListener('click', () => this.inspectNode(neighbor.id));
 			}
 		}
@@ -647,9 +652,10 @@ export class Radial2DController extends Component {
 		this.button(row, this.t('common.recenter'), () => this.centerCurrentView());
 		this.button(row, this.t('common.rebuild'), () => this.rebuild('manual'));
 		const row2 = parent.createDiv({ cls: 'galaxy-panel-row' });
-		this.button(row2, this.t('view.atlas'), () => this.resetToAtlas(), this.state.mode === 'atlas');
+		this.button(row2, this.t('view.atlas'), () => this.resetToAtlas(), this.state.mode === 'atlas' && !this.state.showCompleteRoot);
 		this.button(row2, this.t('view.focus'), () => this.focusActiveNote(), this.state.mode === 'focus');
 		this.button(row2, this.t('view.vaultRoot'), () => this.resetToRoot());
+		this.button(row2, this.t('view.completeMap'), () => this.showCompleteMap(), this.state.showCompleteRoot);
 		this.select(parent, this.t('view.theme'), this.radial().colorScheme, colorSchemeOptions(this.settings.language), (value) => {
 			this.radial().colorScheme = normalizeColorScheme(value);
 			this.saveSoon();
@@ -707,6 +713,7 @@ export class Radial2DController extends Component {
 		this.state.mode = 'atlas';
 		this.state.focusPath = null;
 		if (node.type === 'folder') {
+			this.leaveCompleteMap();
 			this.state.rootPath = visualId;
 			await this.queueRebuild('root');
 			return;
@@ -716,6 +723,7 @@ export class Radial2DController extends Component {
 			this.renderPanel();
 			return;
 		}
+		this.leaveCompleteMap();
 		this.state.rootPath = this.searchAtlasRoot(node, visualId);
 		await this.queueRebuild('root');
 	}
@@ -730,6 +738,42 @@ export class Radial2DController extends Component {
 	private centerCurrentView(): void {
 		const rootId = this.graph?.rootId ?? ROOT_ID;
 		if (this.renderer?.fitToLayout(rootId)) this.needsFit = false;
+	}
+
+	private showCompleteMap(): void {
+		this.state.showCompleteRoot = true;
+		this.applyCompleteMapState();
+		this.needsFit = true;
+		this.rebuild('complete');
+	}
+
+	private applyCompleteMapState(): void {
+		this.state.mode = 'atlas';
+		this.state.rootPath = ROOT_ID;
+		this.state.focusPath = null;
+		this.state.search = '';
+		this.state.atlasDepth = MAX_ATLAS_DEPTH;
+		this.state.nodeLimit = MAX_RENDER_NODE_LIMIT;
+		this.state.linkLimit = MAX_LINK_LIMIT;
+		this.state.externalLinkAnchorLimit = MAX_EXTERNAL_LINK_ANCHOR_LIMIT;
+		this.state.showLinkOverlay = true;
+		this.state.showExternalLinks = true;
+		this.state.externalDetailMode = 'exact';
+		this.state.hiddenLegendItems = [];
+	}
+
+	private leaveCompleteMap(): void {
+		if (!this.state.showCompleteRoot) return;
+		const radial = this.radial();
+		this.state.showCompleteRoot = false;
+		this.state.atlasDepth = radial.atlasDepth;
+		this.state.nodeLimit = radial.renderNodeLimit;
+		this.state.linkLimit = radial.linkLimit;
+		this.state.externalLinkAnchorLimit = radial.externalLinkAnchorLimit;
+		this.state.showExternalLinks = radial.showExternalLinks;
+		this.state.externalDetailMode = radial.externalDetailMode;
+		this.state.hiddenLegendItems = radial.hiddenLegendItems.slice();
+		this.state.showLinkOverlay = radial.showLinkOverlay || !this.state.hiddenLegendItems.includes('link');
 	}
 
 	private centerNode(nodeId: string): void {
@@ -750,20 +794,24 @@ export class Radial2DController extends Component {
 	private renderControlsPage(parent: HTMLElement): void {
 		const radial = this.radial();
 		this.numberInput(parent, this.t('control.depth'), this.state.atlasDepth, 1, MAX_ATLAS_DEPTH, 1, (value) => {
+			this.leaveCompleteMap();
 			this.state.atlasDepth = value;
 			this.rebuild('depth');
 		});
 		this.numberInput(parent, this.t('control.nodes'), this.state.nodeLimit, 200, MAX_RENDER_NODE_LIMIT, 100, (value) => {
+			this.leaveCompleteMap();
 			this.state.nodeLimit = value;
 			this.rebuild('nodes');
 		});
 		this.numberInput(parent, this.t('control.noteLinks'), this.state.linkLimit, 0, MAX_LINK_LIMIT, 50, (value) => {
+			this.leaveCompleteMap();
 			this.state.linkLimit = value;
 			this.rebuild('links');
 		});
-		const hidden = new Set(radial.hiddenLegendItems);
+		const hidden = new Set(this.state.hiddenLegendItems);
 		const noteLinksVisible = this.state.showLinkOverlay && !hidden.has('link');
 		this.toggle(parent, this.t('control.showNoteLinks'), noteLinksVisible, (value) => {
+			this.leaveCompleteMap();
 			radial.showLinkOverlay = value;
 			this.state.showLinkOverlay = value;
 			this.setLegendHidden('link', !value);
@@ -806,6 +854,7 @@ export class Radial2DController extends Component {
 			this.renderPanel();
 		});
 		this.toggle(parent, this.t('control.outsideLinks'), this.state.showExternalLinks, (value) => {
+			this.leaveCompleteMap();
 			this.state.showExternalLinks = value;
 			radial.showExternalLinks = value;
 			this.saveSoon();
@@ -817,6 +866,7 @@ export class Radial2DController extends Component {
 			this.state.externalDetailMode,
 			outsideDetailOptions(this.settings.language),
 			(value) => {
+				this.leaveCompleteMap();
 				this.state.externalDetailMode = normalizeExternalDetailMode(value);
 				radial.externalDetailMode = this.state.externalDetailMode;
 				this.saveSoon();
@@ -824,6 +874,7 @@ export class Radial2DController extends Component {
 			},
 		);
 		this.numberInput(parent, this.t('control.exactOutsideFiles'), this.state.externalLinkAnchorLimit, 0, MAX_EXTERNAL_LINK_ANCHOR_LIMIT, 50, (value) => {
+			this.leaveCompleteMap();
 			this.state.externalLinkAnchorLimit = value;
 			radial.externalLinkAnchorLimit = value;
 			this.saveSoon();
@@ -866,7 +917,7 @@ export class Radial2DController extends Component {
 
 	private renderLegend(parent: HTMLElement): void {
 		parent.createDiv({ cls: 'mwm-side-heading', text: this.t('control.legend') });
-		const hidden = new Set(this.radial().hiddenLegendItems);
+		const hidden = new Set(this.state.hiddenLegendItems);
 		for (const [id, labelKey, titleKey, markerClass] of LEGEND_ITEM_DEFINITIONS) {
 			const row = parent.createEl('label', {
 				cls: hidden.has(id) ? 'mwm-legend-item is-muted' : 'mwm-legend-item',
@@ -879,6 +930,7 @@ export class Radial2DController extends Component {
 			text.createSpan({ cls: 'mwm-legend-label', text: this.t(labelKey) });
 			text.createSpan({ cls: 'mwm-legend-desc', text: this.t(titleKey) });
 			checkbox.addEventListener('change', () => {
+				this.leaveCompleteMap();
 				const value = checkbox.checked;
 				if (value) hidden.delete(id);
 				else hidden.add(id);
@@ -938,7 +990,7 @@ export class Radial2DController extends Component {
 	}
 
 	private button(parent: HTMLElement, label: string, onClick: () => void, active = false): HTMLButtonElement {
-		const button = parent.createEl('button', { cls: active ? 'is-active' : '', text: label });
+		const button = parent.createEl('button', { cls: active ? 'is-active' : '', text: label, attr: { title: label } });
 		button.addEventListener('click', onClick);
 		return button;
 	}
@@ -951,7 +1003,7 @@ export class Radial2DController extends Component {
 	}
 
 	private textArea(parent: HTMLElement, label: string, value: string, onChange: (value: string) => void): void {
-		const field = parent.createEl('label', { cls: 'mwm-panel-field' });
+		const field = parent.createEl('label', { cls: 'mwm-panel-field mwm-panel-field-stack' });
 		field.createSpan({ text: label });
 		const input = field.createEl('textarea');
 		input.value = value;
@@ -1125,6 +1177,7 @@ export class Radial2DController extends Component {
 	}
 
 	private resetToAtlas(): void {
+		this.leaveCompleteMap();
 		this.state.mode = 'atlas';
 		this.state.rootPath = this.state.rootPath || ROOT_ID;
 		this.state.focusPath = null;
@@ -1133,6 +1186,7 @@ export class Radial2DController extends Component {
 	}
 
 	private resetToRoot(): void {
+		this.leaveCompleteMap();
 		this.state.mode = 'atlas';
 		this.state.rootPath = ROOT_ID;
 		this.state.focusPath = null;
@@ -1150,6 +1204,7 @@ export class Radial2DController extends Component {
 	}
 
 	private useAsRoot(nodeId: string): void {
+		this.leaveCompleteMap();
 		this.state.mode = 'atlas';
 		this.state.rootPath = nodeId;
 		this.state.focusPath = null;
@@ -1164,6 +1219,7 @@ export class Radial2DController extends Component {
 	}
 
 	private focusNote(nodeId: string): void {
+		this.leaveCompleteMap();
 		this.state.mode = 'focus';
 		this.state.focusPath = nodeId;
 		this.state.rootPath = ROOT_ID;

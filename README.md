@@ -86,7 +86,7 @@ Global plugin settings include:
 - 2D unresolved link handling.
 - Ignored folders.
 
-The 2D view panel also includes per-view controls for atlas/focus mode, vault root, theme, depth, visible nodes, note-link budget, outside-link detail, exact outside-note limit, ring guides, and legend visibility.
+The 2D view panel also includes per-view controls for atlas/focus mode, vault root, complete map display, theme, depth, visible nodes, note-link budget, outside-link detail, exact outside-note limit, ring guides, and legend visibility.
 
 The 3D view panel includes controls for search, recentering, reveal animation, visual style presets, theme presets, color themes, imported Obsidian graph colors, node sizing, bloom, physics, cruise motion, unresolved links, orphan nodes, quality tier, and default reset.
 

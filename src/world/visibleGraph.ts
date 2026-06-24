@@ -1,5 +1,6 @@
 import {
 	DEFAULT_RADIAL_SETTINGS,
+	MAX_ATLAS_DEPTH,
 	MAX_EXTERNAL_LINK_ANCHOR_LIMIT,
 	MAX_LINK_LIMIT,
 	MAX_RENDER_NODE_LIMIT,
@@ -57,7 +58,9 @@ export function visualNodeId(model: WorldModel, id: string | null | undefined): 
 function buildAtlasGraph(model: WorldModel, state: VisibleGraphState, settings: RadialSettings): VisibleWorldGraph {
 	const rootId = model.nodes.has(state.rootPath) ? state.rootPath : ROOT_ID;
 	const rootDepth = model.nodes.get(rootId)?.depth ?? 0;
-	const maxDepth = clampNumber(state.atlasDepth, 1, 80, settings.atlasDepth);
+	const maxDepth = state.showCompleteRoot
+		? Math.max(MAX_ATLAS_DEPTH, model.stats.maxDepth - rootDepth)
+		: clampNumber(state.atlasDepth, 1, MAX_ATLAS_DEPTH, settings.atlasDepth);
 	const query = normalizedQuery(state.search);
 	const visible = new Set<string>();
 
@@ -186,12 +189,14 @@ function aggregateVisibleLinkEdges(
 	const aggregate = new Map<string, WorldEdge>();
 	const externalNodes = new Map<string, WorldNode>();
 	const externalHierarchyEdges: WorldEdge[] = [];
-	const externalLimit = clampNumber(
-		state.externalLinkAnchorLimit,
-		0,
-		MAX_EXTERNAL_LINK_ANCHOR_LIMIT,
-		settings.externalLinkAnchorLimit,
-	);
+	const externalLimit = state.showCompleteRoot
+		? MAX_EXTERNAL_LINK_ANCHOR_LIMIT
+		: clampNumber(
+				state.externalLinkAnchorLimit,
+				0,
+				MAX_EXTERNAL_LINK_ANCHOR_LIMIT,
+				settings.externalLinkAnchorLimit,
+			);
 	const externalContext = { fileCount: 0, overflowId: null as string | null };
 
 	for (const raw of model.linkEdges) {
@@ -269,7 +274,9 @@ function applyNodeBudget(
 	focusId: string | null,
 ): { nodes: WorldNode[]; hiddenNodeCount: number } {
 	if (state.showCompleteRoot && nodes.length <= MAX_RENDER_NODE_LIMIT) return { nodes, hiddenNodeCount: 0 };
-	const limit = clampNumber(state.nodeLimit, 200, MAX_RENDER_NODE_LIMIT, settings.renderNodeLimit);
+	const limit = state.showCompleteRoot
+		? MAX_RENDER_NODE_LIMIT
+		: clampNumber(state.nodeLimit, 200, MAX_RENDER_NODE_LIMIT, settings.renderNodeLimit);
 	if (nodes.length <= limit) return { nodes, hiddenNodeCount: 0 };
 
 	const candidates = nodes

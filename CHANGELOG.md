@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.3
+
+- Add a 2D Complete map action that shows the vault root with expanded node, link, depth, and outside-link detail budgets.
+- Allow farther 2D zoom-out for large complete maps.
+- Improve 2D panel wrapping and alignment so long labels remain readable.
+- Soften the 2D outside-link road color and legend swatch.
+
 ## 0.2.2
 
 - Address Obsidian community plugin review findings around settings APIs, command names, deprecated slider tooltips, direct static styles, and config folder handling.
