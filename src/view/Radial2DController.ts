@@ -35,10 +35,12 @@ import {
 	layoutRadialGraph,
 	type RadialLayout,
 } from '../layout/radial/layoutRadial';
-import { MAX_RADIAL_ZOOM, MIN_RADIAL_ZOOM, RadialRenderer, emptyActiveState, type RadialActiveState, type RadialResolvedScheme } from '../render/RadialRenderer';
+import { MAX_RADIAL_ZOOM, MIN_RADIAL_ZOOM, RadialRenderer, emptyActiveState, radialFallbackBackground, type RadialActiveState, type RadialResolvedScheme } from '../render/RadialRenderer';
+import { resolveObsidianBackground } from '../render/obsidianTheme';
 import { ROOT_ID, type VisibleGraphState, type VisibleWorldGraph, type WorldEdge, type WorldNode } from '../world/types';
 import { WorldMapIndex } from '../world/WorldMapIndex';
 import { defaultVisibleGraphState } from '../world/visibleGraph';
+import { NodeSearchModal } from './SearchModal';
 
 interface PinPath {
 	id: string;
@@ -60,6 +62,8 @@ interface PinGroup {
 	name: string;
 }
 
+const SEARCH_FOCUS_ZOOM = 0.22;
+
 export class Radial2DController extends Component {
 	private index: WorldMapIndex;
 	private state: VisibleGraphState;
@@ -70,7 +74,7 @@ export class Radial2DController extends Component {
 	private panel: HTMLElement | null = null;
 	private panelBody: HTMLElement | null = null;
 	private statsEl: HTMLElement | null = null;
-	private activePanelPage: 'inspect' | 'pins' | 'view' | 'controls' | 'defaults' = 'inspect';
+	private activePanelPage: 'inspect' | 'pins' | 'view' | 'controls' | 'defaults' = 'view';
 	private selectedNodeId: string | null = null;
 	private selectedLink: WorldEdge | null = null;
 	private hoverNodeId: string | null = null;
@@ -638,23 +642,109 @@ export class Radial2DController extends Component {
 	}
 
 	private renderViewPage(parent: HTMLElement): void {
-		this.textInput(parent, this.t('common.search'), this.state.search, (value) => {
-			this.state.search = value.trim();
-			this.needsFit = true;
-			this.rebuild('search');
-		});
+		const row = parent.createDiv({ cls: 'galaxy-panel-row' });
+		this.button(row, this.t('common.search'), () => this.openSearch());
+		this.button(row, this.t('common.recenter'), () => this.centerCurrentView());
+		this.button(row, this.t('common.rebuild'), () => this.rebuild('manual'));
+		const row2 = parent.createDiv({ cls: 'galaxy-panel-row' });
+		this.button(row2, this.t('view.atlas'), () => this.resetToAtlas(), this.state.mode === 'atlas');
+		this.button(row2, this.t('view.focus'), () => this.focusActiveNote(), this.state.mode === 'focus');
+		this.button(row2, this.t('view.vaultRoot'), () => this.resetToRoot());
 		this.select(parent, this.t('view.theme'), this.radial().colorScheme, colorSchemeOptions(this.settings.language), (value) => {
 			this.radial().colorScheme = normalizeColorScheme(value);
 			this.saveSoon();
 			this.syncThemeClass();
 		});
-		const row = parent.createDiv({ cls: 'galaxy-panel-row' });
-		this.button(row, this.t('view.atlas'), () => this.resetToAtlas(), this.state.mode === 'atlas');
-		this.button(row, this.t('view.focus'), () => this.focusActiveNote(), this.state.mode === 'focus');
-		this.button(row, this.t('view.vaultRoot'), () => this.resetToRoot());
-		const row2 = parent.createDiv({ cls: 'galaxy-panel-row' });
-		this.button(row2, this.t('common.fit'), () => this.renderer?.fitToLayout(null));
-		this.button(row2, this.t('common.rebuild'), () => this.rebuild('manual'));
+	}
+
+	openSearch(): void {
+		if (!this.index.ready) this.index.rebuild(this.radial());
+		const items = [...this.index.nodes.values()].map((node) => {
+			const linkCount = Math.max(0, (node.linkCount || 0) + (node.backlinkCount || 0));
+			const noteCount = Math.max(0, node.noteCount || node.descendantCount || 0);
+			const path = node.path || this.t('3d.card.root');
+			const kind = this.searchKindLabel(node);
+			const countText =
+				node.type === 'folder' || node.type === 'external'
+					? this.t('search.notes', { count: noteCount })
+					: this.t('3d.searchLinks', { count: linkCount });
+			return {
+				value: node,
+				title: node.title,
+				path,
+				detail: `${kind} · ${path} · ${countText}`,
+				rank: linkCount + Math.log2(noteCount + 1) * 8 - node.depth,
+				unresolved: node.type === 'unresolved',
+				hideWhenEmpty: node.id === ROOT_ID,
+				searchText: [node.title, node.path, node.id],
+			};
+		});
+		new NodeSearchModal(this.app, items, (node) => void this.selectSearchNode(node), this.t('2d.searchPlaceholder')).open();
+	}
+
+	private async selectSearchNode(node: WorldNode): Promise<void> {
+		const visualId = this.index.visualNodeId(node.id) ?? node.id;
+		this.selectedNodeId = visualId;
+		this.selectedLink = null;
+		this.hoverNodeId = null;
+		this.hoverLink = null;
+		this.activePanelPage = 'inspect';
+		this.state.search = '';
+		this.state.selectedNodeId = visualId;
+		this.state.selectedLink = null;
+		if (this.state.mode === 'focus' && node.type !== 'folder') {
+			this.state.mode = 'focus';
+			this.state.rootPath = ROOT_ID;
+			this.state.focusPath = node.id;
+			await this.queueRebuild('focus');
+		} else {
+			await this.showSearchNodeInAtlas(node, visualId);
+		}
+		this.centerNode(visualId);
+	}
+
+	private async showSearchNodeInAtlas(node: WorldNode, visualId: string): Promise<void> {
+		this.state.mode = 'atlas';
+		this.state.focusPath = null;
+		if (node.type === 'folder') {
+			this.state.rootPath = visualId;
+			await this.queueRebuild('root');
+			return;
+		}
+		if (this.graph?.nodesById.has(visualId)) {
+			this.applyActiveState();
+			this.renderPanel();
+			return;
+		}
+		this.state.rootPath = this.searchAtlasRoot(node, visualId);
+		await this.queueRebuild('root');
+	}
+
+	private searchAtlasRoot(node: WorldNode, visualId: string): string {
+		const visualNode = this.index.nodes.get(visualId);
+		if (visualNode?.type === 'folder') return visualNode.id;
+		const parentId = visualNode?.parentId ?? node.parentId;
+		return parentId && this.index.nodes.has(parentId) ? parentId : ROOT_ID;
+	}
+
+	private centerCurrentView(): void {
+		const rootId = this.graph?.rootId ?? ROOT_ID;
+		if (this.renderer?.fitToLayout(rootId)) this.needsFit = false;
+	}
+
+	private centerNode(nodeId: string): void {
+		const point = this.renderer?.nodePoint(nodeId);
+		const view = this.renderer?.getView();
+		if (!point || !view) return;
+		this.renderer?.setView(point.x, point.y, Math.max(view.zoom, SEARCH_FOCUS_ZOOM));
+		this.needsFit = false;
+	}
+
+	private searchKindLabel(node: WorldNode): string {
+		if (node.type === 'folder') return this.t('search.folder');
+		if (node.type === 'unresolved') return this.t('3d.searchUnresolved');
+		if (node.type === 'external') return this.t('search.external');
+		return this.t('search.note');
 	}
 
 	private renderControlsPage(parent: HTMLElement): void {
@@ -826,10 +916,6 @@ export class Radial2DController extends Component {
 			event.stopPropagation();
 			this.openLanguageMenu(languageButton);
 		});
-		this.iconButton(controls, 'home', this.t('view.vaultRoot'), () => this.resetToRoot());
-		this.iconButton(controls, 'pin', this.t('common.pinCurrent'), () => this.pinCurrent());
-		this.iconButton(controls, 'maximize', this.t('common.fit'), () => this.renderer?.fitToLayout(null));
-		this.iconButton(controls, 'refresh-cw', this.t('common.rebuild'), () => this.rebuild('manual'));
 	}
 
 	private openLanguageMenu(anchor: HTMLElement): void {
@@ -851,28 +937,10 @@ export class Radial2DController extends Component {
 		menu.showAtPosition({ x: rect.right, y: rect.bottom });
 	}
 
-	private iconButton(parent: HTMLElement, icon: string, title: string, onClick: () => void): HTMLButtonElement {
-		const button = parent.createEl('button', { cls: 'mwm-floating-button', attr: { type: 'button', title, 'aria-label': title } });
-		setIcon(button, icon);
-		button.addEventListener('click', (event) => {
-			event.preventDefault();
-			event.stopPropagation();
-			onClick();
-		});
-		return button;
-	}
-
 	private button(parent: HTMLElement, label: string, onClick: () => void, active = false): HTMLButtonElement {
 		const button = parent.createEl('button', { cls: active ? 'is-active' : '', text: label });
 		button.addEventListener('click', onClick);
 		return button;
-	}
-
-	private textInput(parent: HTMLElement, label: string, value: string, onChange: (value: string) => void): void {
-		const field = parent.createEl('label', { cls: 'mwm-panel-field' });
-		field.createSpan({ text: label });
-		const input = field.createEl('input', { attr: { value, type: 'search' } });
-		input.addEventListener('change', () => onChange(input.value));
 	}
 
 	private numberInput(parent: HTMLElement, label: string, value: number, min: number, max: number, step: number, onChange: (value: number) => void): void {
@@ -1129,6 +1197,8 @@ export class Radial2DController extends Component {
 	private syncThemeClass(): void {
 		const canvasScheme = this.resolvedCanvasScheme();
 		const panelScheme = this.resolvedPanelScheme();
+		const canvasBackground = resolveObsidianBackground(canvasScheme, radialFallbackBackground(canvasScheme));
+		this.contentEl.style.setProperty('--mwm-radial-bg', canvasBackground);
 		this.contentEl.toggleClass('is-day-scheme', canvasScheme === 'day');
 		this.contentEl.toggleClass('is-night-scheme', canvasScheme === 'night');
 		this.panel?.removeClass('gx-theme-dark');
@@ -1137,7 +1207,7 @@ export class Radial2DController extends Component {
 		const renderer = this.renderer;
 		renderer?.beginRenderBatch();
 		try {
-			const changed = renderer?.setTheme(canvasScheme) ?? false;
+			const changed = renderer?.setTheme(canvasScheme, canvasBackground) ?? false;
 			if (changed && this.graph && this.layout) renderer?.setData(this.graph, this.layout, this.radial().labelVisibility, this.radial().showRingGuides);
 		} finally {
 			renderer?.endRenderBatch();

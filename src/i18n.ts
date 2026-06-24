@@ -17,8 +17,8 @@ const STRINGS: Record<string, Record<Language, string>> = {
 	'language': { en: 'Language', zh: '语言' },
 	'language.en': { en: 'English', zh: 'English' },
 	'language.zh': { en: 'Chinese', zh: '中文' },
-	'mode.radial2d': { en: '2D radial', zh: '2D 环形图' },
-	'mode.map3d': { en: '3D map', zh: '3D 地图' },
+	'mode.radial2d': { en: '2D', zh: '2D' },
+	'mode.map3d': { en: '3D', zh: '3D' },
 	'stats.counts': { en: '{nodes} nodes / {links} links', zh: '{nodes} 个节点 / {links} 条链接' },
 	'stats.3d': {
 		en: '{fps} fps · {calls} calls · {nodes}n/{links}l · {state}',
@@ -151,6 +151,11 @@ const STRINGS: Record<string, Record<Language, string>> = {
 
 	'loading.radial': { en: 'Building map…', zh: '构建地图…' },
 	'loading.3d': { en: 'Building map…', zh: '构建地图…' },
+	'2d.searchPlaceholder': { en: 'Search notes or folders, press Enter to locate…', zh: '搜索笔记或文件夹，回车定位…' },
+	'search.folder': { en: 'Folder', zh: '文件夹' },
+	'search.note': { en: 'Note', zh: '笔记' },
+	'search.external': { en: 'Outside', zh: '外部' },
+	'search.notes': { en: '{count} notes', zh: '{count} 个笔记' },
 	'context.openNote': { en: 'Open note', zh: '打开笔记' },
 	'context.focusNote': { en: 'Focus note', zh: '聚焦笔记' },
 	'context.useAsRoot': { en: 'Use as atlas root', zh: '设为图谱根节点' },
@@ -176,6 +181,10 @@ const STRINGS: Record<string, Record<Language, string>> = {
 	'3d.size.degree': { en: 'Size: links', zh: '大小：链接数' },
 	'3d.size.fileSize': { en: 'Size: file size', zh: '大小：文档量' },
 	'3d.size.uniform': { en: 'Size: uniform', zh: '大小：一致' },
+	'3d.sizeBy': { en: 'Size', zh: '大小' },
+	'3d.sizeOption.degree': { en: 'Links', zh: '链接数' },
+	'3d.sizeOption.fileSize': { en: 'File size', zh: '文档量' },
+	'3d.sizeOption.uniform': { en: 'Uniform', zh: '一致' },
 	'3d.colorTheme': { en: 'Color theme…', zh: '配色主题…' },
 	'3d.importColors': { en: 'Import 2D colors', zh: '导入二维配色' },
 	'3d.shuffleColors': { en: 'Shuffle colors', zh: '配色洗牌' },
@@ -271,7 +280,7 @@ const STRINGS: Record<string, Record<Language, string>> = {
 	'settings.ignoredDesc': { en: 'One folder path per line.', zh: '每行一个文件夹路径。' },
 	'notice.rebuilt': { en: 'Mini World Map rebuilt', zh: 'Mini World Map 已重建' },
 	'notice.openToBuild': { en: 'Open Mini World Map to build the index', zh: '打开 Mini World Map 后才能构建索引' },
-	'notice.switchTo3d': { en: 'Switch to 3D map to use fly-to search.', zh: '切换到 3D 地图后可使用飞行搜索。' },
+	'notice.openToSearch': { en: 'Open Mini World Map to search.', zh: '打开 Mini World Map 后才能搜索。' },
 };
 
 export function t(language: Language, key: string, vars: Record<string, string | number> = {}): string {
@@ -291,8 +300,8 @@ export function colorSchemeOptions(language: Language): [ColorScheme, string][] 
 	];
 }
 
-export function languageOptions(language: Language): [Language, string][] {
-	return LANGUAGE_OPTIONS.map(([value]) => [value, t(language, `language.${value}`)]);
+export function languageOptions(_language: Language): [Language, string][] {
+	return LANGUAGE_OPTIONS.map(([value, label]) => [value, label]);
 }
 
 export function hoverModeOptions(language: Language, values: readonly [HoverHighlightMode, string][]): [HoverHighlightMode, string][] {

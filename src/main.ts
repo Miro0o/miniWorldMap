@@ -20,7 +20,6 @@ import {
 } from './settings';
 import { hoverModeOptions, hoverTargetOptions, labelVisibilityOptions, languageOptions, t, viewModeLabel } from './i18n';
 import { MiniWorldMapView } from './view/GalaxyView';
-import { Map3DController } from './view/Map3DController';
 
 export default class MiniWorldMapPlugin extends Plugin {
 	settings: MiniWorldMapSettings = mergeSettings(null);
@@ -67,11 +66,15 @@ export default class MiniWorldMapPlugin extends Plugin {
 
 		this.addCommand({
 			id: 'search-3d',
-			name: 'Search 3D map node and fly',
+			name: 'Search Mini World Map',
 			callback: () => {
 				void this.activateView().then((view) => {
-					if (view?.controller instanceof Map3DController) view.controller.openSearch();
-					else new Notice(t(this.settings.language, 'notice.switchTo3d'));
+					const controller = view?.controller;
+					if (controller && 'openSearch' in controller && typeof controller.openSearch === 'function') {
+						controller.openSearch();
+					} else {
+						new Notice(t(this.settings.language, 'notice.openToSearch'));
+					}
 				});
 			},
 		});

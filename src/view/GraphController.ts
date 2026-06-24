@@ -14,7 +14,9 @@ import { MainThreadForceLayout } from '../layout/MainThreadForceLayout';
 import { WorkerForceLayout } from '../layout/WorkerForceLayout';
 import { AggregateRenderer } from '../render/AggregateRenderer';
 import { makeNodeColorFn, fallbackColorFn } from '../render/palette';
-import { DAYLIGHT, DEEP_SPACE } from '../render/presets';
+import { DAYLIGHT, DEEP_SPACE, NIGHT } from '../render/presets';
+import type { VisualTokens } from '../render/presets';
+import { resolveObsidianBackground } from '../render/obsidianTheme';
 import { CameraDirector } from '../interactions/CameraDirector';
 import { ControlPanel } from '../overlay/ControlPanel';
 import { OverlayManager } from '../overlay/OverlayManager';
@@ -160,6 +162,7 @@ export class GraphController {
 	resize(): void {
 		const { clientWidth: w, clientHeight: h } = this.contentEl;
 		this.renderer?.resize(w, h);
+		this.director?.handleResize();
 	}
 
 	// ---------- 暖启动与开场镜头 ----------
@@ -380,19 +383,26 @@ export class GraphController {
 		this.saveSoon();
 	}
 
-	/** preset + app 主题 → tokens（adaptive 深色与深空共用场景） */
+	/** Theme preset + app theme → renderer tokens. */
 	applyPreset(): void {
 		if (!this.renderer) return;
-		const isDark = activeDocument.body.hasClass('theme-dark');
-		const tokens = this.settings.preset === 'deep-space' || isDark ? DEEP_SPACE : DAYLIGHT;
+		const tokens = this.resolveVisualTokens();
 		this.renderer.applyTokens(tokens, this.settings.bloom.strength);
-		this.panel?.setPanelTheme(tokens.id === 'daylight' ? 'gx-theme-light' : 'gx-theme-dark');
+		this.panel?.setPanelTheme(tokens.panelClass);
 		this.contentEl.toggleClass('gx-daylight', tokens.id === 'daylight');
 	}
 
 	/** workspace css-change（由视图转发） */
 	onCssChange(): void {
-		if (this.settings.preset === 'adaptive') this.applyPreset();
+		if (this.settings.preset === 'auto') this.applyPreset();
+	}
+
+	private resolveVisualTokens(): VisualTokens {
+		const preset = this.settings.preset;
+		if (preset === 'deep-space') return DEEP_SPACE;
+		const tokens = preset === 'day' ? DAYLIGHT : preset === 'night' ? NIGHT : activeDocument.body.hasClass('theme-dark') ? NIGHT : DAYLIGHT;
+		const scheme = tokens.id === 'daylight' ? 'day' : 'night';
+		return { ...tokens, background: resolveObsidianBackground(scheme, tokens.background) };
 	}
 
 	private async importColors(notify: boolean): Promise<void> {
@@ -411,7 +421,20 @@ export class GraphController {
 	// ---------- 选中 / 聚焦 / 搜索 ----------
 
 	openSearch(): void {
-		new NodeSearchModal(this.app, this.store.data.nodes, (i) => this.selectNode(i, true), this.language).open();
+		new NodeSearchModal(
+			this.app,
+			this.store.data.nodes.map((node, index) => ({
+				value: index,
+				title: node.name,
+				path: node.id,
+				detail: `${node.unresolved ? this.tt('3d.searchUnresolved') : node.id} · ${this.tt('3d.searchLinks', { count: node.degree })}`,
+				rank: node.degree,
+				unresolved: node.unresolved,
+				searchText: [node.name, node.id, node.folderTop],
+			})),
+			(i) => this.selectNode(i, true),
+			this.tt('3d.searchPlaceholder'),
+		).open();
 	}
 
 	selectNode(index: number, fly: boolean): void {

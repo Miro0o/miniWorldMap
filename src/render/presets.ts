@@ -1,8 +1,8 @@
 // 双视觉方向的全部 token 集中在此（按 Rick 协议：跑起来看着选，G2 门定默认）
 
 export interface VisualTokens {
-	id: 'deep-space' | 'daylight';
-	background: number;
+	id: 'deep-space' | 'daylight' | 'night';
+	background: string | number;
 	starfield: boolean;
 	motes: boolean; // 晨昼的尘埃微粒（替代星空）
 	bloomEnabled: boolean; // 亮底辉光=雾霾，晨昼强制关
@@ -11,7 +11,7 @@ export interface VisualTokens {
 	nodeLightness: number | null;
 	linkInk: string | null; // 晨昼链接 = 铅笔线（统一墨色，不用端点混色）
 	linkOpacityScale: number;
-	panelClass: string; // 面板风格 class
+	panelClass: 'gx-theme-space' | 'gx-theme-night' | 'gx-theme-light'; // 面板风格 class
 }
 
 export const DEEP_SPACE: VisualTokens = {
@@ -24,7 +24,7 @@ export const DEEP_SPACE: VisualTokens = {
 	nodeLightness: null,
 	linkInk: null,
 	linkOpacityScale: 1,
-	panelClass: 'gx-theme-dark',
+	panelClass: 'gx-theme-space',
 };
 
 export const DAYLIGHT: VisualTokens = {
@@ -38,4 +38,17 @@ export const DAYLIGHT: VisualTokens = {
 	linkInk: '#2e2a24',
 	linkOpacityScale: 0.65,
 	panelClass: 'gx-theme-light',
+};
+
+export const NIGHT: VisualTokens = {
+	id: 'night',
+	background: 0x1e1e1e,
+	starfield: false,
+	motes: false,
+	bloomEnabled: false,
+	lightMode: true,
+	nodeLightness: 0.62,
+	linkInk: '#8b8f99',
+	linkOpacityScale: 0.78,
+	panelClass: 'gx-theme-night',
 };

@@ -156,6 +156,27 @@ interface SectorRingLaneItem {
 	parentKey: string;
 }
 
+interface DepthLayoutPolicy {
+	depth: number;
+	count: number;
+	depthRatio: number;
+	outerWeight: number;
+	crowdPressure: number;
+	middleCrowdWeight: number;
+	sparseTail: number;
+	radialScale: number;
+	bandScale: number;
+	utilizationDrop: number;
+}
+
+interface DepthLayoutProfile {
+	maxDepth: number;
+	averageCount: number;
+	maxCount: number;
+	byDepth: Map<number, DepthLayoutPolicy>;
+	fallback: DepthLayoutPolicy;
+}
+
 export function layoutRadialGraph(graph: VisibleWorldGraph, options: RadialLayoutOptions): RadialLayout {
 	const baseRingGap = clamp(options.ringSpacing, MIN_RING_SPACING, MAX_RING_SPACING);
 	const baseNodeGap = clamp(options.nodeSpacing, MIN_NODE_SPACING, MAX_NODE_SPACING);
@@ -382,7 +403,8 @@ function placeRadialChildren(
 		childRadius = Math.max(childRadius, Math.min(parentPoint.radius + maxExtra, requiredRadius));
 	}
 
-	const childWeights = children.map((childId) => subtreeAllocationWeight(childId, depth + 1, childrenByParent, metrics));
+	const baseChildWeights = children.map((childId) => subtreeAllocationWeight(childId, depth + 1, childrenByParent, metrics));
+	const childWeights = densityBalancedSubtreeAllocationWeights(children, depth + 1, childrenByParent, metrics, baseChildWeights);
 	const totalWeight = Math.max(1, childWeights.reduce((sum, weight) => sum + weight, 0));
 	const siblingGapScale = children.length > 8 ? clamp(2.2 / Math.sqrt(children.length), 0.28, 0.82) : 1;
 	const gapBudgetFactor =
@@ -583,7 +605,47 @@ function subtreeAllocationWeight(
 	const spanDemand = clamp(metric.spanDemand ?? LEAF_SPAN_DEMAND, LEAF_SPAN_DEMAND, Math.PI * 1.98);
 	const demandWeight = Math.pow(spanDemand, 1.62) * 18;
 	const structuralWeight = Math.pow(Math.max(1, structural), 0.58) * 0.18;
-	return Math.max(0.18, demandWeight + structuralWeight);
+	const earlyDepthWeight = clamp(1 - Math.max(0, depth - 1) * 0.34, 0, 1);
+	const subtreeDensity = Math.pow(Math.max(1, metric.count), 0.62);
+	const depthReserve = Math.sqrt(Math.max(1, metric.maxDepth - depth + 1));
+	const denseSectorWeight = earlyDepthWeight * (subtreeDensity * 0.72 + depthReserve * 0.48 + spanDemand * 2.2);
+	return Math.max(0.18, demandWeight + structuralWeight + denseSectorWeight);
+}
+
+function densityBalancedSubtreeAllocationWeights(
+	children: string[],
+	depth: number,
+	childrenByParent: Map<string, string[]>,
+	metrics: Map<string, Metric>,
+	baseWeights: number[],
+): number[] {
+	if (children.length <= 1) return baseWeights;
+	const childMetrics = children.map((childId) => metrics.get(childId) ?? { count: 1, weight: 1, maxDepth: depth, spanDemand: LEAF_SPAN_DEMAND });
+	const counts = childMetrics.map((metric) => Math.max(1, metric.count));
+	const totalCount = counts.reduce((sum, count) => sum + count, 0);
+	const averageCount = totalCount / Math.max(1, counts.length);
+	const maxCount = Math.max(1, ...counts);
+	const spanDemands = childMetrics.map((metric) => Math.max(LEAF_SPAN_DEMAND, metric.spanDemand ?? LEAF_SPAN_DEMAND));
+	const averageSpanDemand = spanDemands.reduce((sum, demand) => sum + demand, 0) / Math.max(1, spanDemands.length);
+	const depthEmphasis = clamp(1 - Math.max(0, depth - 1) * 0.16, 0.32, 1);
+	const siblingContrast = clamp(Math.sqrt(maxCount / Math.max(1, averageCount)) - 1, 0, 1.9);
+	if (siblingContrast <= 0.04 && maxCount < averageCount * 1.18) return baseWeights;
+	return baseWeights.map((baseWeight, index) => {
+		const metric = childMetrics[index] ?? { count: 1, weight: 1, maxDepth: depth, spanDemand: LEAF_SPAN_DEMAND };
+		const count = counts[index] ?? 1;
+		const countRatio = count / Math.max(1, averageCount);
+		const maxRatio = count / Math.max(1, maxCount);
+		const demandRatio = Math.max(LEAF_SPAN_DEMAND, metric.spanDemand ?? LEAF_SPAN_DEMAND) / Math.max(LEAF_SPAN_DEMAND, averageSpanDemand);
+		const directChildren = childrenByParent.get(children[index] ?? '')?.length ?? 0;
+		const densityLift =
+			1 +
+			smoothstep(1.06, 2.85, countRatio) * (0.34 + depthEmphasis * 0.46 + siblingContrast * 0.1) +
+			smoothstep(0.42, 0.78, maxRatio) * (0.12 + depthEmphasis * 0.18);
+		const demandLift = 1 + smoothstep(1.05, 2.25, demandRatio) * (0.16 + depthEmphasis * 0.24);
+		const branchLift = 1 + smoothstep(2, 10, directChildren) * (0.08 + depthEmphasis * 0.14);
+		const sparseBrake = countRatio < 0.72 ? clamp(0.9 + countRatio * 0.14, 0.84, 1) : 1;
+		return Math.max(0.12, baseWeight * clamp(densityLift * demandLift * branchLift * sparseBrake, 0.72, 2.38));
+	});
 }
 
 function placeOuterCircleNodes(
@@ -728,24 +790,19 @@ function assignDepthRingTargets(
 	let previousRadius = 0;
 	let previousGap = spacing.ringGap;
 	const depths = [...byDepth.keys()].filter((depth) => depth > 0).sort((a, b) => a - b);
-	const totalNodes = [...byDepth.values()].reduce((sum, entry) => sum + entry.count, 0);
-	const averageRingCount = totalNodes / Math.max(1, depths.length);
-	const maxRingCount = Math.max(1, ...depths.map((depth) => byDepth.get(depth)?.count ?? 0));
-	const outerDepth = depths[depths.length - 1] ?? 0;
-	const outerBaselineStartDepth = depths[Math.max(0, depths.length - 2)] ?? outerDepth;
+	const depthProfile = buildDepthLayoutProfile(new Map(depths.map((depth) => [depth, byDepth.get(depth)?.count ?? 0])));
 	for (const depth of depths) {
 		const entry = byDepth.get(depth);
 		if (!entry) continue;
-		const isOuterDepth = depth === outerDepth;
-		const outerBandWeight = isOuterDepth ? 1 : depth >= outerBaselineStartDepth ? 0.65 : 0;
-		const density = ringCountDensity(entry.count, averageRingCount, maxRingCount);
+		const policy = depthPolicy(depthProfile, depth);
+		const density = ringCountDensity(entry.count, depthProfile.averageCount, depthProfile.maxCount);
 		const pressureSignal = Math.sqrt(entry.linkPressure / Math.max(1, entry.count));
-		const demandRadius = depthRingDemandRadius(entry, nodeGap, density.pressure, pressureSignal, outerBandWeight);
-		const carriedGap = baselineProgressionGap(previousGap, spacing, outerBandWeight);
+		const demandRadius = depthRingDemandRadius(entry, nodeGap, density.pressure, pressureSignal, policy);
+		const carriedGap = baselineProgressionGap(previousGap, spacing, policy);
 		const structuralGap = Math.max(
-			minimumBaselineRingGap(entry, spacing, density, pressureSignal),
+			minimumBaselineRingGap(entry, spacing, density, pressureSignal, policy),
 			carriedGap,
-			spacing.ringGap * (0.88 + outerBandWeight * 0.1),
+			spacing.ringGap * (0.86 + policy.outerWeight * 0.1 + policy.sparseTail * 0.48),
 		);
 		const structuralRadius = previousRadius + structuralGap;
 		const radius = Math.max(structuralRadius, demandRadius);
@@ -780,30 +837,29 @@ function depthRingDemandRadius(
 	nodeGap: number,
 	densityPressure: number,
 	linkPressure: number,
-	outerBandWeight = 0,
+	policy: DepthLayoutPolicy,
 ): number {
 	if (entry.count <= 1) return entry.maxDiameter * 1.18;
-	const outerWeight = clamp(outerBandWeight, 0, 1);
 	const count = Math.max(1, entry.count);
-	const paddingDemand = count * Math.max(10, nodeGap * (0.14 + outerWeight * 0.06));
-	const circumferenceDemand = Math.max(entry.diameterTotal, entry.arcDemand * (0.78 + outerWeight * 0.16)) + paddingDemand;
+	const paddingDemand = count * Math.max(10, nodeGap * (0.14 + policy.outerWeight * 0.05 + policy.sparseTail * 0.08 + policy.middleCrowdWeight * 0.115));
+	const circumferenceDemand =
+		Math.max(entry.diameterTotal, entry.arcDemand * (0.78 + policy.outerWeight * 0.12 + policy.sparseTail * 0.16 + policy.middleCrowdWeight * 0.22)) + paddingDemand;
 	const utilization = clamp(
-		(0.62 - outerWeight * 0.08) -
-			Math.min(0.18 + outerWeight * 0.02, densityPressure * 0.07) -
-			Math.min(0.08 + outerWeight * 0.02, linkPressure * 0.012) -
+		(0.62 - policy.utilizationDrop) -
+			Math.min(0.18 + policy.outerWeight * 0.02 + policy.sparseTail * 0.02, densityPressure * 0.07) -
+			Math.min(0.08 + policy.outerWeight * 0.02 + policy.sparseTail * 0.02 + policy.middleCrowdWeight * 0.038, linkPressure * 0.012) -
 			(entry.external ? 0.04 : 0),
-		0.38 - outerWeight * 0.1,
-		0.62 - outerWeight * 0.08,
+		0.32 - policy.sparseTail * 0.06 - policy.middleCrowdWeight * 0.06,
+		0.62,
 	);
-	return circumferenceDemand / Math.max(1, Math.PI * 2 * utilization) + entry.maxDiameter * (0.9 + outerWeight * 0.3);
+	return circumferenceDemand / Math.max(1, Math.PI * 2 * utilization) + entry.maxDiameter * (0.9 + policy.outerWeight * 0.18 + policy.sparseTail * 0.34 + policy.middleCrowdWeight * 0.36);
 }
 
-function baselineProgressionGap(previousGap: number, spacing: SpacingProfile, outerBandWeight: number): number {
-	const outerWeight = clamp(outerBandWeight, 0, 1);
-	if (outerWeight <= 0) return Math.min(previousGap * 0.82, spacing.ringGap * 1.55);
+function baselineProgressionGap(previousGap: number, spacing: SpacingProfile, policy: DepthLayoutPolicy): number {
+	if (policy.outerWeight <= 0.03 && policy.sparseTail <= 0.03 && policy.middleCrowdWeight <= 0.03) return Math.min(previousGap * 0.82, spacing.ringGap * 1.55);
 	return Math.max(
-		previousGap * (1.08 + outerWeight * 0.16),
-		spacing.ringGap * (1.24 + outerWeight * 0.42),
+		previousGap * clamp(0.9 + policy.outerWeight * 0.16 + policy.sparseTail * 0.1 + policy.middleCrowdWeight * 0.22, 0.9, 1.34),
+		spacing.ringGap * clamp(0.9 + (policy.radialScale - 1) * 0.64 + policy.middleCrowdWeight * 0.48, 0.9, 2.78),
 	);
 }
 
@@ -812,17 +868,21 @@ function minimumBaselineRingGap(
 	spacing: SpacingProfile,
 	density: ReturnType<typeof ringCountDensity>,
 	linkPressure: number,
+	policy: DepthLayoutPolicy,
 ): number {
 	const sparseRelief = clamp(1 - density.relativeToAverage, 0, 0.32);
 	const factor = clamp(
 		0.92 +
 			density.pressure * 0.18 +
 			density.maxPressure * 0.12 +
+			policy.outerWeight * 0.08 +
+			policy.middleCrowdWeight * 0.52 +
+			policy.sparseTail * 0.28 +
 			Math.min(0.12, linkPressure * 0.018) +
 			(entry.external ? 0.08 : 0) -
 			sparseRelief * 0.08,
 		0.84,
-		1.68,
+		2.9,
 	);
 	return spacing.ringGap * factor + entry.maxDiameter * 0.62;
 }
@@ -840,6 +900,84 @@ function ringCountDensity(count: number, averageCount: number, maxCount: number)
 		pressure: clamp(Math.sqrt(relativeToAverage), 0, 2.8),
 		maxPressure: clamp(Math.sqrt(relativeToMax), 0, 1),
 	};
+}
+
+function buildDepthLayoutProfile(countsByDepth: Map<number, number>): DepthLayoutProfile {
+	const depths = [...countsByDepth.keys()].filter((depth) => depth > 0).sort((a, b) => a - b);
+	const maxDepth = Math.max(1, ...depths);
+	const totalCount = depths.reduce((sum, depth) => sum + Math.max(0, countsByDepth.get(depth) ?? 0), 0);
+	const averageCount = totalCount / Math.max(1, depths.length);
+	const maxCount = Math.max(1, ...depths.map((depth) => Math.max(0, countsByDepth.get(depth) ?? 0)));
+	const byDepth = new Map<number, DepthLayoutPolicy>();
+	const fallback = makeDepthLayoutPolicy(0, 0, maxDepth, averageCount, maxCount, 0);
+	let cumulativeCount = 0;
+	for (const depth of depths) {
+		const count = Math.max(0, countsByDepth.get(depth) ?? 0);
+		cumulativeCount += count;
+		const populationRatio = totalCount > 0 ? cumulativeCount / totalCount : 0;
+		byDepth.set(depth, makeDepthLayoutPolicy(depth, count, maxDepth, averageCount, maxCount, populationRatio));
+	}
+	return { maxDepth, averageCount, maxCount, byDepth, fallback };
+}
+
+function makeDepthLayoutPolicy(
+	depth: number,
+	count: number,
+	maxDepth: number,
+	averageCount: number,
+	maxCount: number,
+	populationRatio: number,
+): DepthLayoutPolicy {
+	const normalizedDepth = Math.max(0, depth || 0);
+	const depthRatio = normalizedDepth <= 1 ? 0 : clamp((normalizedDepth - 1) / Math.max(1, maxDepth - 1), 0, 1);
+	const relativeToAverage = Math.max(0, count || 0) / Math.max(1, averageCount || 1);
+	const relativeToMax = Math.max(0, count || 0) / Math.max(1, maxCount || 1);
+	const ringPresence = Math.max(
+		smoothstep(0.5, 0.95, relativeToAverage),
+		smoothstep(0.16, 0.38, relativeToMax),
+	);
+	const depthOuterWeight = smoothstep(0.38, 0.88, depthRatio);
+	const populationOuterWeight = smoothstep(0.62, 0.92, populationRatio) * smoothstep(0.18, 0.42, depthRatio) * ringPresence;
+	const outerWeight = clamp(Math.max(depthOuterWeight, populationOuterWeight * 0.72), 0, 1);
+	const crowdPressure = clamp(Math.sqrt(relativeToAverage) * 0.62 + Math.sqrt(relativeToMax) * 0.52, 0, 2.2);
+	const crowdDominance = smoothstep(0.06, 0.24, depthRatio) * (1 - smoothstep(0.76, 0.98, depthRatio));
+	const middleCrowdWeight = clamp(crowdDominance * ringPresence * Math.max(0, crowdPressure - 0.72) * (1 - outerWeight * 0.35), 0, 1.55);
+	const sparseAverage = clamp((0.9 - Math.min(0.9, relativeToAverage)) / 0.9, 0, 1);
+	const sparseMax = clamp((0.24 - Math.min(0.24, relativeToMax)) / 0.24, 0, 1);
+	const sparseTail = outerWeight * Math.max(sparseAverage, sparseMax * 0.86);
+	const radialScale = clamp(
+		1 + outerWeight * 0.05 + sparseTail * 1.02 + middleCrowdWeight * 0.56 + Math.max(0, crowdPressure - 1.05) * 0.06 * outerWeight,
+		1,
+		2.58,
+	);
+	const bandScale = clamp(
+		1 + outerWeight * 0.07 + sparseTail * 0.96 + middleCrowdWeight * 0.72 + Math.max(0, crowdPressure - 1.05) * 0.16 * outerWeight,
+		1,
+		2.86,
+	);
+	const utilizationDrop = clamp(outerWeight * 0.022 + sparseTail * 0.085 + middleCrowdWeight * 0.09 + Math.max(0, crowdPressure - 1.05) * 0.03 * outerWeight, 0, 0.36);
+	return {
+		depth,
+		count,
+		depthRatio,
+		outerWeight,
+		crowdPressure,
+		middleCrowdWeight,
+		sparseTail,
+		radialScale,
+		bandScale,
+		utilizationDrop,
+	};
+}
+
+function depthPolicy(profile: DepthLayoutProfile, depth: number): DepthLayoutPolicy {
+	return profile.byDepth.get(Math.max(0, Math.round(depth || 0))) ?? profile.fallback;
+}
+
+function smoothstep(edge0: number, edge1: number, value: number): number {
+	if (edge0 === edge1) return value >= edge1 ? 1 : 0;
+	const x = clamp((value - edge0) / (edge1 - edge0), 0, 1);
+	return x * x * (3 - 2 * x);
 }
 
 export function resolveRadialCollisions(
@@ -1121,25 +1259,23 @@ function applySectorPreservingRingLanes(
 	let previousOuterRadius = 0;
 	const depths = [...byDepth.keys()].sort((a, b) => a - b);
 	const maxDepth = Math.max(...depths, 1);
-	const outerDepth = depths[depths.length - 1] ?? 0;
-	const outerBaselineStartDepth = depths[Math.max(0, depths.length - 2)] ?? outerDepth;
-	const totalDepthItems = depths.reduce((sum, depth) => sum + (byDepth.get(depth)?.length ?? 0), 0);
-	const averageDepthItems = totalDepthItems / Math.max(1, depths.length);
-	const maxDepthItems = Math.max(1, ...depths.map((depth) => byDepth.get(depth)?.length ?? 0));
+	const depthProfile = buildDepthLayoutProfile(new Map(depths.map((depth) => [depth, byDepth.get(depth)?.length ?? 0])));
 	for (const depth of depths) {
 		const items = byDepth.get(depth);
 		if (!items?.length) continue;
-		const isOuterDepth = depth === outerDepth;
-		const outerBandWeight = isOuterDepth ? 1 : depth >= outerBaselineStartDepth ? 0.55 : 0;
+		const policy = depthPolicy(depthProfile, depth);
 		const maxVisualRadius = Math.max(...items.map((item) => item.visualRadius), 4);
 		const totalArcDemand = items.reduce((sum, item) => sum + item.arcDemand, 0);
 		const targetRadius = ringTargets.get(depth) ?? spacing.ringGap * depth;
 		const depthRatio = clamp((depth - 1) / Math.max(1, maxDepth - 1), 0, 1);
-		const density = ringCountDensity(items.length, averageDepthItems, maxDepthItems);
-		const densityPressure = clamp(density.pressure * 0.72 + density.maxPressure * 0.42, 0, 2.6);
+		const density = ringCountDensity(items.length, depthProfile.averageCount, depthProfile.maxCount);
+		const baseDensityPressure = density.pressure * 0.72 + density.maxPressure * 0.42;
+		const outerActivation = Math.max(policy.outerWeight, policy.sparseTail);
+		const densityPressure = clamp(baseDensityPressure + Math.max(0, policy.crowdPressure - baseDensityPressure) * Math.max(outerActivation, policy.middleCrowdWeight * 0.82), 0, 2.8);
 		const laneGap = Math.max(
-			maxVisualRadius * (2.08 + densityPressure * 0.22 + depthRatio * 0.12) + Math.max(14, nodeGap * (0.12 + densityPressure * 0.018 + depthRatio * 0.018)),
-			spacing.ringGap * (0.064 + densityPressure * 0.024 + depthRatio * 0.012),
+			(maxVisualRadius * (2.08 + densityPressure * 0.22 + depthRatio * 0.12) + Math.max(14, nodeGap * (0.12 + densityPressure * 0.018 + depthRatio * 0.018))) *
+				clamp(1 + policy.sparseTail * 0.22 + policy.middleCrowdWeight * 0.42, 1, 1.84),
+			spacing.ringGap * (0.064 + densityPressure * 0.024 + depthRatio * 0.012) * policy.bandScale,
 		);
 		const crowdedBaselineRadius = sectorPreservingCrowdedBaselineRadius(
 			targetRadius,
@@ -1151,10 +1287,10 @@ function applySectorPreservingRingLanes(
 			spacing,
 			nodeGap,
 		);
-		const outerDemandRadius = outerBandWeight > 0
-			? outerBaselineRingDemandRadius(items, positions, spacing, nodeGap, densityPressure, previousOuterRadius, laneGap, isOuterDepth)
+		const outerDemandRadius = policy.outerWeight > 0.04 || policy.sparseTail > 0.04
+			? outerBaselineRingDemandRadius(items, positions, spacing, nodeGap, densityPressure, previousOuterRadius, laneGap, policy)
 			: 0;
-		const jitterScale = 1 - outerBandWeight * 0.32;
+		const jitterScale = clamp(1 + policy.sparseTail * 0.92 + policy.outerWeight * 0.08 - Math.max(0, densityPressure - 1.4) * 0.05, 0.88, 2.1);
 		const requestedJitterBand = sectorPreservingJaggedBand(depth, targetRadius, spacing, items.length, totalArcDemand, densityPressure) * jitterScale;
 		const jitterReserve = sectorPreservingJitterReserve(targetRadius, items.length, totalArcDemand);
 		const baselineRadius = Math.max(
@@ -1162,12 +1298,12 @@ function applySectorPreservingRingLanes(
 			crowdedBaselineRadius,
 			outerDemandRadius,
 			previousOuterRadius + laneGap * 0.38,
-			outerBandWeight > 0 ? previousOuterRadius + outerBandLaneGap(spacing, laneGap, outerBandWeight) : 0,
-			previousOuterRadius + maxVisualRadius * 1.72 + requestedJitterBand * jitterReserve,
+			policy.outerWeight > 0.04 || policy.sparseTail > 0.04 ? previousOuterRadius + outerBandLaneGap(spacing, laneGap, policy) : 0,
+			previousOuterRadius + maxVisualRadius * (1.72 + policy.middleCrowdWeight * 0.26) + requestedJitterBand * jitterReserve,
 		);
 		const jitterBand = Math.min(
 			sectorPreservingJaggedBand(depth, baselineRadius, spacing, items.length, totalArcDemand, densityPressure) * jitterScale,
-			Math.max(0, baselineRadius - previousOuterRadius - maxVisualRadius * 1.62),
+			Math.max(0, baselineRadius - previousOuterRadius - maxVisualRadius * (1.44 - policy.sparseTail * 0.12)),
 		);
 		ringTargets.set(depth, baselineRadius);
 		const laneIndexes = sectorPreservingLaneIndexes(items, baselineRadius, nodeGap);
@@ -1186,7 +1322,7 @@ function applySectorPreservingRingLanes(
 			);
 			const parentPoint = item.node.parentId !== null && item.node.parentId !== undefined ? positions.get(item.node.parentId) : null;
 			const routeMinRadius = parentPoint
-				? parentPoint.radius + routeContinuityGap(parentPoint, spacing, nodeGap, depthRatio, densityPressure)
+				? parentPoint.radius + routeContinuityGap(parentPoint, spacing, nodeGap, depthRatio, densityPressure, policy)
 				: 0;
 			const radius = sectorPreservingRadiusForLaneBucket(
 				item.id,
@@ -1205,7 +1341,7 @@ function applySectorPreservingRingLanes(
 			item.point.radius = radius;
 			item.point.ringRadius = baselineRadius;
 			item.point.ringBandMin = baselineRadius - jitterBand;
-			item.point.ringBandMax = baselineRadius + jitterBand;
+			item.point.ringBandMax = Math.max(baselineRadius + jitterBand, radius);
 			item.point.angle = angle;
 			depthOuterRadius = Math.max(depthOuterRadius, radius + maxVisualRadius * 0.96);
 		}
@@ -1247,11 +1383,10 @@ function sectorPreservingKindOffset(kind: string): number {
 	return 0.14;
 }
 
-function outerBandLaneGap(spacing: SpacingProfile, laneGap: number, outerBandWeight: number): number {
-	const outerWeight = clamp(outerBandWeight, 0, 1);
+function outerBandLaneGap(spacing: SpacingProfile, laneGap: number, policy: DepthLayoutPolicy): number {
 	return Math.max(
-		spacing.ringGap * (1.02 + outerWeight * 0.56),
-		laneGap * (1.16 + outerWeight * 0.32),
+		spacing.ringGap * (1.0 + policy.outerWeight * 0.22 + policy.sparseTail * 0.52),
+		laneGap * (1.12 + policy.outerWeight * 0.1 + policy.sparseTail * 0.26),
 	);
 }
 
@@ -1261,11 +1396,12 @@ function routeContinuityGap(
 	nodeGap: number,
 	depthRatio: number,
 	densityPressure: number,
+	policy: DepthLayoutPolicy,
 ): number {
 	const parentSector = clamp(parentPoint.sectorSpan ?? Math.PI * 2, 0.024, Math.PI * 2);
 	const narrowness = clamp((Math.PI * 0.9 - parentSector) / (Math.PI * 0.9), 0, 1);
 	const densityReserve = clamp(densityPressure / 2.6, 0, 1) * 0.08;
-	const factor = clamp(0.38 + narrowness * 0.24 + clamp(depthRatio, 0, 1) * 0.12 + densityReserve, 0.36, 0.82);
+	const factor = clamp(0.38 + narrowness * 0.24 + clamp(depthRatio, 0, 1) * 0.12 + densityReserve + policy.sparseTail * 0.48, 0.36, 1.46);
 	return spacing.ringGap * factor + Math.max(12, nodeGap * 0.04);
 }
 
@@ -1277,15 +1413,15 @@ function outerBaselineRingDemandRadius(
 	densityPressure: number,
 	previousOuterRadius: number,
 	laneGap: number,
-	isFinalDepth: boolean,
+	policy: DepthLayoutPolicy,
 ): number {
 	if (items.length === 0) return 0;
 	const maxVisualRadius = Math.max(...items.map((item) => item.visualRadius), 4);
 	const totalDemand = items.reduce((sum, item) => sum + item.arcDemand, 0) + items.length * Math.max(10, nodeGap * 0.18);
 	const fullRingUtilization = clamp(
-		(isFinalDepth ? 0.48 : 0.52) - densityPressure * 0.035 - Math.min(0.06, items.length / 3600),
-		isFinalDepth ? 0.3 : 0.34,
-		isFinalDepth ? 0.48 : 0.52,
+		(0.52 - policy.outerWeight * 0.035 - policy.sparseTail * 0.055) - densityPressure * 0.035 - Math.min(0.06, items.length / 3600),
+		0.3 - policy.sparseTail * 0.022,
+		0.52,
 	);
 	let demandRadius = totalDemand / Math.max(1, Math.PI * 2 * fullRingUtilization) + maxVisualRadius * 1.3;
 	const groups = new Map<string, SectorRingLaneItem[]>();
@@ -1299,19 +1435,22 @@ function outerBaselineRingDemandRadius(
 		const parentPoint = finalRingParentPoint(group[0]!, positions);
 		const parentDepth = Math.max(0, Math.round(parentPoint?.depth ?? 0));
 		const parentSectorSpan = clamp(parentPoint?.sectorSpan ?? Math.PI * 2, 0.08, Math.PI * 2);
-		const targetSpan = outerBaselineGroupTargetSpan(group.length, parentDepth, parentSectorSpan, isFinalDepth);
+		const targetSpan = outerBaselineGroupTargetSpan(group.length, parentDepth, parentSectorSpan, policy);
 		const groupDemand = group.reduce((sum, item) => sum + item.arcDemand, 0) + Math.max(0, group.length - 1) * Math.max(12, nodeGap * 0.22);
 		const utilization = clamp(
-			(isFinalDepth ? 0.68 : 0.72) - densityPressure * 0.045 - Math.min(0.08, Math.sqrt(group.length) * 0.012),
-			isFinalDepth ? 0.42 : 0.46,
-			isFinalDepth ? 0.68 : 0.72,
+			(0.72 - policy.outerWeight * 0.035 - policy.sparseTail * 0.055) - densityPressure * 0.045 - Math.min(0.08, Math.sqrt(group.length) * 0.012),
+			0.42 - policy.sparseTail * 0.045,
+			0.72,
 		);
 		demandRadius = Math.max(demandRadius, groupDemand / Math.max(1, targetSpan * utilization) + maxVisualRadius * 2.15);
 	}
 	return Math.max(
 		demandRadius,
 		previousOuterRadius +
-			Math.max(laneGap * (isFinalDepth ? 1.34 : 1.08), spacing.ringGap * (isFinalDepth ? 1.46 : 1.24)) +
+			Math.max(
+				laneGap * (1.06 + policy.outerWeight * 0.1 + policy.sparseTail * 0.24),
+				spacing.ringGap * (1.1 + policy.outerWeight * 0.14 + policy.sparseTail * 0.52),
+			) +
 			maxVisualRadius * 1.2,
 	);
 }
@@ -1321,13 +1460,13 @@ function finalRingParentPoint(item: SectorRingLaneItem, positions: Map<string, R
 	return positions.get(item.parentKey) ?? null;
 }
 
-function outerBaselineGroupTargetSpan(count: number, parentDepth: number, parentSectorSpan: number, isFinalDepth: boolean): number {
+function outerBaselineGroupTargetSpan(count: number, parentDepth: number, parentSectorSpan: number, policy: DepthLayoutPolicy): number {
 	if (parentDepth <= 0) return clamp(parentSectorSpan * 0.96, 0.12, Math.PI * 2);
 	const controlledSpan = controlledSiblingMaxSpan(count, parentDepth, parentSectorSpan);
 	const countSpan = 0.14 + Math.sqrt(Math.max(1, count)) * 0.22;
 	const depthTighten = clamp(1 - Math.max(0, parentDepth - 1) * 0.04, 0.66, 0.96);
 	const compactSpan = countSpan * depthTighten;
-	const inheritedLimit = parentSectorSpan * (isFinalDepth ? 0.72 : 0.78);
+	const inheritedLimit = parentSectorSpan * clamp(0.8 - policy.outerWeight * 0.08 - policy.sparseTail * 0.1, 0.54, 0.8);
 	return clamp(Math.min(controlledSpan, compactSpan, inheritedLimit), 0.08, parentSectorSpan);
 }
 
@@ -2126,11 +2265,11 @@ function applyMiddleRingRadiusRelief(
 	const averageCount = totalCount / Math.max(1, countsByDepth.size);
 	const globalScale = clamp(
 		1 +
-			Math.max(0, Math.log2(Math.max(1, totalCount) / 420)) * 0.032 +
-			Math.max(0, Math.sqrt(maxCount / 72) - 1) * 0.07 +
-			Math.max(0, Math.sqrt(averageCount / 48) - 1) * 0.045,
+			Math.max(0, Math.log2(Math.max(1, totalCount) / 420)) * 0.044 +
+			Math.max(0, Math.sqrt(maxCount / 72) - 1) * 0.12 +
+			Math.max(0, Math.sqrt(averageCount / 48) - 1) * 0.075,
 		1,
-		1.28,
+		1.46,
 	);
 	const maxDepth = Math.max(...depths, 1);
 	const scaleForDepth = (depth: number) => {
@@ -2139,10 +2278,12 @@ function applyMiddleRingRadiusRelief(
 		const depthRatio = clamp((depth - 1) / Math.max(1, maxDepth - 1), 0, 1);
 		const middleWeight = Math.sin(Math.PI * clamp(depthRatio, 0, 1));
 		const innerWeight = clamp(1 - depthRatio * 0.68, 0.28, 1);
-		const crowdWeight = clamp(density.pressure * 0.54 + density.maxPressure * 0.62, 0, 1.5);
-		const relief = (globalScale - 1) * (0.28 + middleWeight * 0.62 + innerWeight * 0.36) * crowdWeight;
-		const sparseCarry = count > 0 && density.relativeToAverage < 0.55 ? (globalScale - 1) * 0.24 : 0;
-		return clamp(globalScale + relief + sparseCarry, 1, 1.46);
+		const crowdWeight = clamp(density.pressure * 0.78 + density.maxPressure * 0.88, 0, 2.08);
+		const crowdDominance = smoothstep(0.08, 0.28, depthRatio) * (1 - smoothstep(0.72, 0.96, depthRatio));
+		const focusedMiddle = middleWeight * 0.7 + crowdDominance * 0.84 + innerWeight * 0.28;
+		const relief = (globalScale - 1) * (0.34 + focusedMiddle) * crowdWeight;
+		const sparseCarry = count > 0 && density.relativeToAverage < 0.55 ? (globalScale - 1) * 0.12 : 0;
+		return clamp(globalScale + relief + sparseCarry, 1, 1.86);
 	};
 	if (globalScale <= 1.001 && depths.every((depth) => scaleForDepth(depth) <= 1.001)) return;
 	for (const [depth, radius] of [...ringTargets.entries()]) {
@@ -2171,16 +2312,20 @@ function enforceDepthBaselineProgression(
 	spacing: SpacingProfile,
 ): void {
 	const depths = [...ringTargets.keys()].filter((depth) => depth > 0).sort((a, b) => a - b);
-	const outerDepth = depths[depths.length - 1] ?? 0;
-	const outerBaselineStartDepth = depths[Math.max(0, depths.length - 2)] ?? outerDepth;
+	const countsByDepth = new Map<number, number>();
+	for (const point of positions.values()) {
+		if (point.external || point.radius <= 0.001) continue;
+		const depth = Math.max(0, Math.round(point.depth || 0));
+		if (depth > 0) countsByDepth.set(depth, (countsByDepth.get(depth) ?? 0) + 1);
+	}
+	const depthProfile = buildDepthLayoutProfile(countsByDepth);
 	let previousRadius = 0;
 	let previousGap = spacing.ringGap;
 	for (const depth of depths) {
 		const currentRadius = ringTargets.get(depth) ?? 0;
-		const isOuterDepth = depth === outerDepth;
-		const outerBandWeight = isOuterDepth ? 1 : depth >= outerBaselineStartDepth ? 0.65 : 0;
-		const carriedGap = baselineProgressionGap(previousGap, spacing, outerBandWeight);
-		const requiredRadius = previousRadius + Math.max(spacing.ringGap * (0.88 + outerBandWeight * 0.1), carriedGap);
+		const policy = depthPolicy(depthProfile, depth);
+		const carriedGap = baselineProgressionGap(previousGap, spacing, policy);
+		const requiredRadius = previousRadius + Math.max(spacing.ringGap * (0.86 + policy.outerWeight * 0.12 + policy.sparseTail * 0.68), carriedGap);
 		const delta = requiredRadius > currentRadius ? requiredRadius - currentRadius : 0;
 		const nextRadius = currentRadius + delta;
 		if (delta > 0) {
@@ -2678,17 +2823,20 @@ function enforceOuterHierarchyContinuity(
 		.filter((depth) => depth > 0))]
 		.sort((a, b) => a - b);
 	if (depths.length === 0) return;
-	const maxDepth = depths[depths.length - 1] ?? 0;
-	const outerStartDepth = depths[Math.max(0, depths.length - 2)] ?? maxDepth;
-	enforceLocalOuterHierarchyContinuity(positions, graph, spacing, outerStartDepth, maxDepth);
+	const countsByDepth = new Map<number, number>();
+	for (const point of positions.values()) {
+		if (point.external || point.radius <= 0.001) continue;
+		const depth = Math.max(0, Math.round(point.depth || 0));
+		if (depth > 0) countsByDepth.set(depth, (countsByDepth.get(depth) ?? 0) + 1);
+	}
+	enforceLocalOuterHierarchyContinuity(positions, graph, spacing, buildDepthLayoutProfile(countsByDepth));
 }
 
 function enforceLocalOuterHierarchyContinuity(
 	positions: Map<string, RadialPoint>,
 	graph: VisibleWorldGraph,
 	spacing: SpacingProfile,
-	outerStartDepth: number,
-	maxDepth: number,
+	depthProfile: DepthLayoutProfile,
 ): void {
 	const childrenByParent = new Map<string, string[]>();
 	for (const edge of graph.hierarchyEdges) {
@@ -2706,13 +2854,16 @@ function enforceLocalOuterHierarchyContinuity(
 			const source = positions.get(edge.source);
 			const target = positions.get(edge.target);
 			if (!source || !target || source.external || target.external) continue;
-			const sourceDepth = Math.max(0, Math.round(source.depth || 0));
-			const targetDepth = Math.max(0, Math.round(target.depth || 0));
-			if (targetDepth < outerStartDepth || targetDepth <= sourceDepth) continue;
-			const sourceAngle = Number.isFinite(source.angle) ? source.angle : Math.atan2(source.y, source.x);
-			const targetAngle = Number.isFinite(target.angle) ? target.angle : Math.atan2(target.y, target.x);
-			const angularJump = Math.abs(shortestAngleDelta(sourceAngle, targetAngle));
-			const requiredGap = outerHierarchyRequiredGap(source, target, spacing, angularJump, targetDepth >= maxDepth ? 1 : 0.68);
+				const sourceDepth = Math.max(0, Math.round(source.depth || 0));
+				const targetDepth = Math.max(0, Math.round(target.depth || 0));
+				if (targetDepth <= sourceDepth) continue;
+				const policy = depthPolicy(depthProfile, targetDepth);
+				const activation = Math.max(policy.outerWeight, policy.sparseTail * 0.82);
+				if (activation <= 0.18) continue;
+				const sourceAngle = Number.isFinite(source.angle) ? source.angle : Math.atan2(source.y, source.x);
+				const targetAngle = Number.isFinite(target.angle) ? target.angle : Math.atan2(target.y, target.x);
+				const angularJump = Math.abs(shortestAngleDelta(sourceAngle, targetAngle));
+				const requiredGap = outerHierarchyRequiredGap(source, target, spacing, angularJump, clamp(0.28 + activation * 0.58, 0.28, 0.86));
 			const delta = source.radius + requiredGap - target.radius;
 			if (delta <= Math.max(2, spacing.ringGap * 0.012)) continue;
 			for (const id of collectOuterSubtreeIds(edge.target, childrenByParent, positions, targetDepth)) {
@@ -2736,14 +2887,14 @@ function outerHierarchyRequiredGap(
 	const angleReserve = clamp((angularJump - 0.42) / 1.18, 0, 0.36);
 	const narrowSector = clamp((Math.PI * 0.72 - clamp(source.sectorSpan ?? Math.PI * 2, 0.024, Math.PI * 2)) / (Math.PI * 0.72), 0, 1);
 	const baselineGap =
-		spacing.ringGap * (0.92 + outerWeight * 0.44 + angleReserve * 0.3 + narrowSector * 0.18) +
+		spacing.ringGap * (0.9 + outerWeight * 0.32 + angleReserve * 0.22 + narrowSector * 0.14) +
 		Math.max(source.nodeRadius, target.nodeRadius) * 2.4;
 	if (angularJump <= 0.08) return baselineGap;
 	const averageRadius = Math.max(1, (Math.max(0, source.radius) + Math.max(0, target.radius)) * 0.5);
 	const arcDistance = averageRadius * angularJump;
-	const radialDominanceGap = arcDistance * (0.42 + clamp(outerWeight, 0, 1) * 0.2);
+	const radialDominanceGap = arcDistance * (0.34 + clamp(outerWeight, 0, 1) * 0.14);
 	const dominanceCap =
-		spacing.ringGap * (outerWeight >= 0.99 ? 2.85 : 2.12) +
+		spacing.ringGap * (outerWeight >= 0.82 ? 2.3 : 1.76) +
 		Math.max(source.nodeRadius, target.nodeRadius) * 3.2;
 	return Math.max(
 		baselineGap,

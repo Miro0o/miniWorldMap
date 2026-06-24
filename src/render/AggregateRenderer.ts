@@ -82,6 +82,7 @@ export class AggregateRenderer {
 	private graphRadiusEstimate: number;
 
 	private projVec = new Vector3();
+	private viewVec = new Vector3();
 	private pixelScale = 1;
 	private nodeScale = 1;
 
@@ -154,7 +155,7 @@ export class AggregateRenderer {
 			fragmentShader: NODE_FRAGMENT_SHADER,
 			vertexColors: true,
 			transparent: true,
-			depthWrite: false,
+			depthWrite: true,
 			uniforms: {
 				uPixelScale: { value: this.pixelScale },
 				uSizeMul: { value: this.nodeScale },
@@ -385,7 +386,7 @@ export class AggregateRenderer {
 			const sNode = this.data.nodes[l.source];
 			const c = (sNode ? this.colorFn(sNode).clone() : new Color('#9aa4b2'));
 			c.getHSL(hsl);
-			c.setHSL(hsl.h, Math.min(hsl.s * 1.2, 1), this.tokens.lightMode ? 0.42 : 0.62);
+			c.setHSL(hsl.h, Math.min(hsl.s * 1.2, 1), this.tokens.id === 'daylight' ? 0.42 : 0.62);
 			for (const v of [0, 1]) {
 				col[k * 6 + v * 3] = c.r;
 				col[k * 6 + v * 3 + 1] = c.g;
@@ -579,31 +580,62 @@ export class AggregateRenderer {
 
 	// ---------- 拾取与投影 ----------
 
-	/** 投影到屏幕逻辑像素；z>1 = 在镜头后 */
+	/** 投影到屏幕逻辑像素；behind = 不在镜头前方/可见深度范围 */
 	projectNode(i: number, w: number, h: number): { x: number; y: number; behind: boolean } {
 		this.projVec.set(this.positions[i * 3] ?? 0, this.positions[i * 3 + 1] ?? 0, this.positions[i * 3 + 2] ?? 0);
+		const depth = -this.viewVec.copy(this.projVec).applyMatrix4(this.camera.matrixWorldInverse).z;
 		this.projVec.project(this.camera);
 		return {
 			x: ((this.projVec.x + 1) / 2) * w,
 			y: ((1 - this.projVec.y) / 2) * h,
-			behind: this.projVec.z > 1,
+			behind: depth <= 0 || this.projVec.z < -1 || this.projVec.z > 1,
 		};
 	}
 
-	/** 屏幕空间最近邻拾取（O(n) 仅在点击/节流 hover 时跑） */
+	private projectedNodeHit(i: number, w: number, h: number): { x: number; y: number; depth: number; visible: boolean } {
+		this.projVec.set(this.positions[i * 3] ?? 0, this.positions[i * 3 + 1] ?? 0, this.positions[i * 3 + 2] ?? 0);
+		const depth = -this.viewVec.copy(this.projVec).applyMatrix4(this.camera.matrixWorldInverse).z;
+		this.projVec.project(this.camera);
+		return {
+			x: ((this.projVec.x + 1) / 2) * w,
+			y: ((1 - this.projVec.y) / 2) * h,
+			depth,
+			visible: depth > 0 && this.projVec.z >= -1 && this.projVec.z <= 1,
+		};
+	}
+
+	private nodeScreenRadius(i: number, depth: number): number {
+		const diameterPhysicalPx = Math.min(
+			((this.sizes[i] ?? NODE_BASE_RADIUS) * this.nodeScale * this.pixelScale) / Math.max(depth, 1),
+			110 * this.renderer.getPixelRatio(),
+		);
+		return Math.max(diameterPhysicalPx / this.renderer.getPixelRatio() / 2, 1);
+	}
+
+	/** Depth-aware screen-space picking. Covered nodes do not win through foreground discs. */
 	pickNearest(px: number, py: number, w: number, h: number, maxPx: number): number {
-		let best = -1;
-		let bestDist = maxPx;
+		let bestVisible = -1;
+		let bestVisibleDepth = Infinity;
+		let bestVisibleDist = Infinity;
+		let bestNear = -1;
+		let bestNearDist = maxPx;
 		for (let i = 0; i < this.data.nodes.length; i++) {
-			const p = this.projectNode(i, w, h);
-			if (p.behind) continue;
+			const p = this.projectedNodeHit(i, w, h);
+			if (!p.visible) continue;
 			const d = Math.hypot(p.x - px, p.y - py);
-			if (d < bestDist) {
-				bestDist = d;
-				best = i;
+			const r = this.nodeScreenRadius(i, p.depth);
+			if (d <= r) {
+				if (p.depth < bestVisibleDepth || (p.depth === bestVisibleDepth && d < bestVisibleDist)) {
+					bestVisibleDepth = p.depth;
+					bestVisibleDist = d;
+					bestVisible = i;
+				}
+			} else if (d < bestNearDist) {
+				bestNearDist = d;
+				bestNear = i;
 			}
 		}
-		return best;
+		return bestVisible >= 0 ? bestVisible : bestNear;
 	}
 
 	nodeRadius(i: number): number {

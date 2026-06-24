@@ -50,6 +50,7 @@ export class WorldMapIndex {
 			this.app.metadataCache.resolvedLinks as LinkTable,
 			this.app.metadataCache.unresolvedLinks as LinkTable,
 			settings,
+			this.app.vault.getName(),
 		);
 	}
 

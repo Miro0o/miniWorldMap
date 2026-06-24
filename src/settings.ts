@@ -24,7 +24,7 @@ export interface LookSettings {
 	sizeBy: SizeBy;
 }
 
-export type VisualPreset = 'deep-space' | 'adaptive';
+export type VisualPreset = 'auto' | 'day' | 'night' | 'deep-space';
 
 export interface GalaxySettings {
 	bloom: BloomSettings;
@@ -154,7 +154,7 @@ export const DEFAULT_GALAXY_SETTINGS: GalaxySettings = {
 	showOrphans: true,
 	colorTheme: 'imported',
 	qualityOverride: 'auto',
-	preset: 'adaptive',
+	preset: 'auto',
 	colorGroups: [],
 	positionCache: {},
 };
@@ -258,7 +258,7 @@ export function mergeGalaxySettings(saved: unknown): GalaxySettings {
 		qualityOverride: (['auto', 'high', 'low', 'mobile'] as const).includes(s['qualityOverride'] as 'auto')
 			? (s['qualityOverride'] as GalaxySettings['qualityOverride'])
 			: d.qualityOverride,
-		preset: s['preset'] === 'deep-space' ? 'deep-space' : 'adaptive',
+		preset: normalizeVisualPreset(s['preset']),
 		colorGroups: Array.isArray(s['colorGroups'])
 			? s['colorGroups'].filter(
 					(g): g is import('./settings/graphJsonImport').ColorGroup =>
@@ -300,6 +300,12 @@ export function normalizeLanguage(value: unknown): Language {
 
 export function normalizeColorScheme(value: unknown): ColorScheme {
 	return value === 'auto' || value === 'day' || value === 'night' ? value : DEFAULT_RADIAL_SETTINGS.colorScheme;
+}
+
+export function normalizeVisualPreset(value: unknown): VisualPreset {
+	if (value === 'auto' || value === 'day' || value === 'night' || value === 'deep-space') return value;
+	if (value === 'adaptive') return 'auto';
+	return DEFAULT_GALAXY_SETTINGS.preset;
 }
 
 export function normalizeLabelVisibility(value: unknown): LabelVisibility {

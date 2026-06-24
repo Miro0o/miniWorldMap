@@ -108,6 +108,10 @@ const PALETTES: Record<RadialResolvedScheme, RadialPalette> = {
 	},
 };
 
+export function radialFallbackBackground(scheme: RadialResolvedScheme): string {
+	return PALETTES[scheme].bg;
+}
+
 export class RadialRenderer {
 	readonly renderer: WebGLRenderer;
 	readonly camera: OrthographicCamera;
@@ -133,6 +137,7 @@ export class RadialRenderer {
 	private centerY = 0;
 	private zoom = 1;
 	private scheme: RadialResolvedScheme = 'night';
+	private background = PALETTES.night.bg;
 	private revealFrame = 0;
 	private revealOverlay: HTMLElement | null = null;
 	private renderBatchDepth = 0;
@@ -145,7 +150,7 @@ export class RadialRenderer {
 		this.container.addClass('is-radial-preparing');
 		this.renderer = new WebGLRenderer({ antialias: true, alpha: false });
 		this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-		this.renderer.setClearColor(this.palette().bg, 1);
+		this.renderer.setClearColor(this.background, 1);
 		this.domElement = this.renderer.domElement;
 		this.domElement.classList.add('mwm-radial-canvas');
 		this.domElement.tabIndex = 0;
@@ -156,11 +161,14 @@ export class RadialRenderer {
 		this.camera.lookAt(0, 0, 0);
 	}
 
-	setTheme(scheme: RadialResolvedScheme): boolean {
-		if (this.scheme === scheme) return false;
+	setTheme(scheme: RadialResolvedScheme, background = radialFallbackBackground(scheme)): boolean {
+		const schemeChanged = this.scheme !== scheme;
+		const backgroundChanged = this.background !== background;
+		if (!schemeChanged && !backgroundChanged) return false;
 		this.scheme = scheme;
-		this.renderer.setClearColor(this.palette().bg, 1);
-		if (this.nodeMaterial) {
+		this.background = background;
+		this.renderer.setClearColor(this.background, 1);
+		if (schemeChanged && this.nodeMaterial) {
 			const lightMode = this.nodeMaterial.uniforms['uLightMode'];
 			const pixelScale = this.nodeMaterial.uniforms['uPixelScale'];
 			if (lightMode) lightMode.value = scheme === 'day' ? 1 : 0;
@@ -168,7 +176,7 @@ export class RadialRenderer {
 			this.updateNodeScale();
 		}
 		this.render();
-		return true;
+		return schemeChanged;
 	}
 
 	setData(graph: VisibleWorldGraph, layout: RadialLayout, labelVisibility: LabelVisibility, showRingGuides = false): void {

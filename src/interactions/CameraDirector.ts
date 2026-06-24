@@ -1,5 +1,5 @@
 import { MOUSE, PerspectiveCamera, Spherical, Vector3 } from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
 import { CRUISE, FLY_TO } from '../constants';
 
 function easeInOutCubic(t: number): number {
@@ -37,7 +37,7 @@ export class CameraDirector {
 	/** 巡航角速度倍率（面板「巡航速度」滑杆） */
 	cruiseSpeed = 1;
 
-	private controls: OrbitControls;
+	private controls: TrackballControls;
 	private tween: Tween | null = null;
 	private lastInputAt = 0;
 	private cruiseAnchor: Spherical | null = null;
@@ -57,9 +57,12 @@ export class CameraDirector {
 		private dom: HTMLElement,
 		private hooks: CameraHooks,
 	) {
-		this.controls = new OrbitControls(camera, dom);
-		this.controls.enableDamping = true;
-		this.controls.dampingFactor = 0.08;
+		this.controls = new TrackballControls(camera, dom);
+		this.controls.rotateSpeed = 1.0;
+		this.controls.zoomSpeed = 1.2;
+		this.controls.panSpeed = 0.3;
+		this.controls.staticMoving = true;
+		this.controls.keys = ['', '', ''];
 		this.lastInputAt = performance.now();
 
 		dom.tabIndex = 0; // 画布可聚焦 → 键盘飞行不影响 Obsidian 其他快捷键
@@ -69,6 +72,10 @@ export class CameraDirector {
 
 	get target(): Vector3 {
 		return this.controls.target;
+	}
+
+	handleResize(): void {
+		this.controls.handleResize();
 	}
 
 	private markInput(): void {

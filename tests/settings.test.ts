@@ -62,6 +62,7 @@ describe('Mini World Map settings migration', () => {
 		expect(settings.galaxy3d.bloom.strength).toBe(1.2);
 		expect(settings.galaxy3d.physics.repel).toBe(123);
 		expect(settings.galaxy3d.look.sizeBy).toBe('fileSize');
-		expect(settings.galaxy3d.preset).toBe('adaptive');
+		expect(settings.galaxy3d.preset).toBe('auto');
+		expect(mergeSettings({ galaxy3d: { preset: 'adaptive' } }).galaxy3d.preset).toBe('auto');
 	});
 });

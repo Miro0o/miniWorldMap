@@ -1,9 +1,10 @@
-import type { GalaxySettings, Language, ViewMode } from '../settings';
+import type { GalaxySettings, Language, SizeBy, ViewMode, VisualPreset } from '../settings';
 import { DEFAULT_GALAXY_SETTINGS } from '../settings';
 import type { StylePreset } from '../render/stylePresets';
 import { STYLE_PRESETS } from '../render/stylePresets';
 import type { ColorTheme } from '../render/colorThemes';
 import { COLOR_THEMES } from '../render/colorThemes';
+import type { VisualTokens } from '../render/presets';
 import { t, viewModeLabel } from '../i18n';
 import { Slider } from './Slider';
 
@@ -39,10 +40,10 @@ export class ControlPanel {
 	private page: PanelPage = 'view';
 	private sliders: Slider[] = [];
 	private cruiseBtn: HTMLButtonElement | null = null;
-	private presetBtn: HTMLButtonElement | null = null;
+	private presetSelect: HTMLSelectElement | null = null;
 	private unresolvedBtn: HTMLButtonElement | null = null;
 	private orphanBtn: HTMLButtonElement | null = null;
-	private sizeByBtn: HTMLButtonElement | null = null;
+	private sizeBySelect: HTMLSelectElement | null = null;
 	private qualityBtn: HTMLButtonElement | null = null;
 	private styleChips: HTMLButtonElement[] = [];
 
@@ -53,7 +54,7 @@ export class ControlPanel {
 		private cb: ControlPanelCallbacks,
 		private viewMode: ViewMode = 'map3d',
 	) {
-		this.root = parent.createDiv({ cls: 'galaxy-panel gx-theme-dark mwm-map-panel' });
+		this.root = parent.createDiv({ cls: 'galaxy-panel gx-theme-space mwm-map-panel' });
 		const header = this.root.createDiv({ cls: 'galaxy-panel-header' });
 		this.statsEl = header.createDiv({ cls: 'galaxy-panel-stats', text: '…' });
 		const collapseBtn = header.createEl('button', { cls: 'galaxy-panel-collapse', text: '-' });
@@ -71,10 +72,10 @@ export class ControlPanel {
 		this.sliders = [];
 		this.styleChips = [];
 		this.cruiseBtn = null;
-		this.presetBtn = null;
+		this.presetSelect = null;
 		this.unresolvedBtn = null;
 		this.orphanBtn = null;
-		this.sizeByBtn = null;
+		this.sizeBySelect = null;
 		this.qualityBtn = null;
 
 		const modeSwitch = this.body.createDiv({ cls: 'mwm-mode-switch' });
@@ -120,11 +121,16 @@ export class ControlPanel {
 	private renderAppearancePage(parent: HTMLElement): void {
 		const s = this.settings;
 		const d = DEFAULT_GALAXY_SETTINGS;
-		const themeRow = parent.createDiv({ cls: 'galaxy-panel-row' });
-		this.presetBtn = themeRow.createEl('button', { text: this.presetLabel() });
-		this.presetBtn.addEventListener('click', () => {
-			s.preset = s.preset === 'deep-space' ? 'adaptive' : 'deep-space';
-			this.presetBtn?.setText(this.presetLabel());
+		const themeField = parent.createEl('label', { cls: 'mwm-panel-field' });
+		themeField.createSpan({ text: this.tt('view.theme') });
+		this.presetSelect = themeField.createEl('select');
+		for (const [value, label] of this.themeOptions()) {
+			this.presetSelect.createEl('option', { attr: { value }, text: label });
+		}
+		this.presetSelect.value = s.preset;
+		this.presetSelect.addEventListener('change', () => {
+			if (!this.presetSelect) return;
+			s.preset = this.presetSelect.value as VisualPreset;
 			this.cb.onPreset();
 		});
 
@@ -149,12 +155,16 @@ export class ControlPanel {
 			new Slider(parent, this.slider('3d.glowThreshold', 0, 1, 0.05, d.bloom.threshold, () => s.bloom.threshold, (v) => (s.bloom.threshold = v), undefined, this.cb.onBloom)),
 		);
 
-		const sizeRow = parent.createDiv({ cls: 'galaxy-panel-row' });
-		this.sizeByBtn = sizeRow.createEl('button', { text: this.sizeByLabel() });
-		this.sizeByBtn.addEventListener('click', () => {
-			const order: typeof s.look.sizeBy[] = ['degree', 'fileSize', 'uniform'];
-			s.look.sizeBy = order[(order.indexOf(s.look.sizeBy) + 1) % order.length] ?? 'degree';
-			this.sizeByBtn?.setText(this.sizeByLabel());
+		const sizeField = parent.createEl('label', { cls: 'mwm-panel-field' });
+		sizeField.createSpan({ text: this.tt('3d.sizeBy') });
+		this.sizeBySelect = sizeField.createEl('select');
+		for (const [value, label] of this.sizeOptions()) {
+			this.sizeBySelect.createEl('option', { attr: { value }, text: label });
+		}
+		this.sizeBySelect.value = s.look.sizeBy;
+		this.sizeBySelect.addEventListener('change', () => {
+			if (!this.sizeBySelect) return;
+			s.look.sizeBy = this.sizeBySelect.value as SizeBy;
 			this.cb.onSizeBy();
 		});
 
@@ -282,10 +292,6 @@ export class ControlPanel {
 		};
 	}
 
-	private presetLabel(): string {
-		return `${this.tt('view.theme')}: ${this.settings.preset === 'deep-space' ? this.tt('theme.deep') : this.tt('theme.auto')}`;
-	}
-
 	private cruiseLabel(): string {
 		return this.settings.cruise ? this.tt('3d.cruiseOn') : this.tt('3d.cruiseOff');
 	}
@@ -298,12 +304,25 @@ export class ControlPanel {
 		return this.settings.showOrphans ? this.tt('3d.orphansShow') : this.tt('3d.orphansHide');
 	}
 
-	private sizeByLabel(): string {
-		return this.tt(`3d.size.${this.settings.look.sizeBy}`);
-	}
-
 	private qualityLabel(): string {
 		return this.tt(`3d.quality.${this.settings.qualityOverride}`);
+	}
+
+	private themeOptions(): [VisualPreset, string][] {
+		return [
+			['auto', this.tt('theme.auto')],
+			['night', this.tt('theme.night')],
+			['day', this.tt('theme.day')],
+			['deep-space', this.tt('theme.deep')],
+		];
+	}
+
+	private sizeOptions(): [SizeBy, string][] {
+		return [
+			['degree', this.tt('3d.sizeOption.degree')],
+			['fileSize', this.tt('3d.sizeOption.fileSize')],
+			['uniform', this.tt('3d.sizeOption.uniform')],
+		];
 	}
 
 	private markActiveChip(id: string): void {
@@ -313,10 +332,10 @@ export class ControlPanel {
 	refreshAll(): void {
 		for (const sl of this.sliders) sl.refresh();
 		this.cruiseBtn?.setText(this.cruiseLabel());
-		this.presetBtn?.setText(this.presetLabel());
+		if (this.presetSelect) this.presetSelect.value = this.settings.preset;
 		this.unresolvedBtn?.setText(this.unresolvedLabel());
 		this.orphanBtn?.setText(this.orphanLabel());
-		this.sizeByBtn?.setText(this.sizeByLabel());
+		if (this.sizeBySelect) this.sizeBySelect.value = this.settings.look.sizeBy;
 		this.qualityBtn?.setText(this.qualityLabel());
 	}
 
@@ -325,7 +344,9 @@ export class ControlPanel {
 		this.render();
 	}
 
-	setPanelTheme(cls: 'gx-theme-dark' | 'gx-theme-light'): void {
+	setPanelTheme(cls: VisualTokens['panelClass']): void {
+		this.root.removeClass('gx-theme-space');
+		this.root.removeClass('gx-theme-night');
 		this.root.removeClass('gx-theme-dark');
 		this.root.removeClass('gx-theme-light');
 		this.root.addClass(cls);

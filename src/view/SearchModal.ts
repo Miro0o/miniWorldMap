@@ -1,61 +1,66 @@
 import type { App } from 'obsidian';
 import { SuggestModal, prepareFuzzySearch } from 'obsidian';
-import type { Language } from '../settings';
-import type { GraphNode } from '../types';
-import { t } from '../i18n';
 
-interface Hit {
-	index: number;
-	node: GraphNode;
+export interface NodeSearchItem<T> {
+	value: T;
+	title: string;
+	path: string;
+	detail: string;
+	rank: number;
+	unresolved?: boolean;
+	hideWhenEmpty?: boolean;
+	searchText?: string[];
+}
+
+interface Hit<T> {
+	item: NodeSearchItem<T>;
 	score: number;
 }
 
-/** 搜索星系节点 → 镜头飞行（Obsidian 原生 SuggestModal，键盘友好） */
-export class NodeSearchModal extends SuggestModal<Hit> {
+/** Shared node search for map views (Obsidian SuggestModal, keyboard friendly). */
+export class NodeSearchModal<T> extends SuggestModal<Hit<T>> {
 	constructor(
 		app: App,
-		private nodes: GraphNode[],
-		private onPick: (index: number) => void,
-		private language: Language = 'en',
+		private items: NodeSearchItem<T>[],
+		private onPick: (value: T) => void,
+		placeholder: string,
 	) {
 		super(app);
-		this.setPlaceholder(this.tt('3d.searchPlaceholder'));
+		this.setPlaceholder(placeholder);
 	}
 
-	getSuggestions(query: string): Hit[] {
+	getSuggestions(query: string): Hit<T>[] {
 		const q = query.trim();
 		if (!q) {
-			// 空查询：按度数给出枢纽 top 20——「星座导览」
-			return [...this.nodes.entries()]
-				.filter(([, n]) => !n.unresolved)
-				.sort((a, b) => b[1].degree - a[1].degree)
+			return this.items
+				.filter((item) => !item.unresolved && !item.hideWhenEmpty)
+				.sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title))
 				.slice(0, 20)
-				.map(([index, node]) => ({ index, node, score: 0 }));
+				.map((item) => ({ item, score: 0 }));
 		}
 		const fuzzy = prepareFuzzySearch(q);
-		const hits: Hit[] = [];
-		for (let i = 0; i < this.nodes.length; i++) {
-			const node = this.nodes[i];
-			if (!node) continue;
-			const m = fuzzy(node.name) ?? fuzzy(node.id);
-			if (m) hits.push({ index: i, node, score: m.score });
+		const hits: Hit<T>[] = [];
+		for (const item of this.items) {
+			let bestScore: number | null = null;
+			for (const text of item.searchText ?? [item.title, item.path]) {
+				const match = fuzzy(text);
+				if (!match) continue;
+				bestScore = bestScore === null ? match.score : Math.max(bestScore, match.score);
+			}
+			if (bestScore !== null) hits.push({ item, score: bestScore });
 		}
-		return hits.sort((a, b) => b.score - a.score || b.node.degree - a.node.degree).slice(0, 50);
+		return hits.sort((a, b) => b.score - a.score || b.item.rank - a.item.rank || a.item.title.localeCompare(b.item.title)).slice(0, 50);
 	}
 
-	renderSuggestion(hit: Hit, el: HTMLElement): void {
-		el.createDiv({ text: hit.node.name });
+	renderSuggestion(hit: Hit<T>, el: HTMLElement): void {
+		el.createDiv({ text: hit.item.title });
 		el.createDiv({
 			cls: 'gx-search-path',
-			text: `${hit.node.unresolved ? this.tt('3d.searchUnresolved') : hit.node.id} · ${this.tt('3d.searchLinks', { count: hit.node.degree })}`,
+			text: hit.item.detail,
 		});
 	}
 
-	onChooseSuggestion(hit: Hit): void {
-		this.onPick(hit.index);
-	}
-
-	private tt(key: string, vars: Record<string, string | number> = {}): string {
-		return t(this.language, key, vars);
+	onChooseSuggestion(hit: Hit<T>): void {
+		this.onPick(hit.item.value);
 	}
 }

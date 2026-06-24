@@ -30,22 +30,77 @@
 	overflow: hidden;
 	display: flex;
 	flex-direction: column;
-	background: var(--background-secondary);
-	border: 1px solid var(--background-modifier-border);
-	color: var(--text-normal);
-	box-shadow: var(--shadow-s);
+	background: var(--mwm-panel-bg, var(--background-secondary));
+	border: 1px solid var(--mwm-panel-border, var(--background-modifier-border));
+	color: var(--mwm-panel-text, var(--text-normal));
+	box-shadow: var(--mwm-panel-shadow, var(--shadow-s));
+}
+
+.galaxy-panel.gx-theme-space {
+	--background-primary: rgba(8, 12, 27, 0.92);
+	--background-secondary: rgba(3, 6, 18, 0.88);
+	--background-modifier-border: rgba(154, 164, 255, 0.18);
+	--background-modifier-hover: rgba(127, 155, 255, 0.1);
+	--background-modifier-active-hover: rgba(127, 155, 255, 0.18);
+	--interactive-accent: #7c9cff;
+	--text-normal: #e8ecf6;
+	--text-muted: #aeb8d0;
+	--text-on-accent: #080b18;
+	--mwm-panel-bg: rgba(3, 6, 18, 0.88);
+	--mwm-panel-border: rgba(154, 164, 255, 0.18);
+	--mwm-panel-text: #e8ecf6;
+	--mwm-panel-shadow: 0 18px 42px rgba(0, 0, 3, 0.42);
+	backdrop-filter: blur(16px);
 }
 
 .galaxy-panel.gx-theme-dark {
-	background: var(--background-secondary);
-	border-color: var(--background-modifier-border);
-	color: var(--text-normal);
+	--background-primary: rgba(37, 37, 37, 0.95);
+	--background-secondary: rgba(30, 30, 30, 0.94);
+	--background-modifier-border: rgba(255, 255, 255, 0.12);
+	--background-modifier-hover: rgba(255, 255, 255, 0.08);
+	--background-modifier-active-hover: rgba(255, 255, 255, 0.14);
+	--interactive-accent: #8b7cf6;
+	--text-normal: #f8fafc;
+	--text-muted: #a8adb7;
+	--text-on-accent: #ffffff;
+	--mwm-panel-bg: rgba(30, 30, 30, 0.94);
+	--mwm-panel-border: rgba(255, 255, 255, 0.12);
+	--mwm-panel-text: #f8fafc;
+	--mwm-panel-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
+}
+
+.galaxy-panel.gx-theme-night {
+	--background-primary: rgba(37, 37, 37, 0.95);
+	--background-secondary: rgba(30, 30, 30, 0.94);
+	--background-modifier-border: rgba(255, 255, 255, 0.12);
+	--background-modifier-hover: rgba(255, 255, 255, 0.08);
+	--background-modifier-active-hover: rgba(255, 255, 255, 0.14);
+	--interactive-accent: #8b7cf6;
+	--text-normal: #f8fafc;
+	--text-muted: #a8adb7;
+	--text-on-accent: #ffffff;
+	--mwm-panel-bg: rgba(30, 30, 30, 0.94);
+	--mwm-panel-border: rgba(255, 255, 255, 0.12);
+	--mwm-panel-text: #f8fafc;
+	--mwm-panel-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
+	backdrop-filter: blur(14px);
 }
 
 .galaxy-panel.gx-theme-light {
-	background: var(--background-secondary);
-	border-color: var(--background-modifier-border);
-	color: var(--text-normal);
+	--background-primary: rgba(255, 252, 245, 0.88);
+	--background-secondary: rgba(246, 244, 239, 0.94);
+	--background-modifier-border: rgba(46, 42, 36, 0.16);
+	--background-modifier-hover: rgba(46, 42, 36, 0.07);
+	--background-modifier-active-hover: rgba(46, 42, 36, 0.12);
+	--interactive-accent: #3f7fe8;
+	--text-normal: #2e2a24;
+	--text-muted: #70685f;
+	--text-on-accent: #ffffff;
+	--mwm-panel-bg: rgba(246, 244, 239, 0.94);
+	--mwm-panel-border: rgba(46, 42, 36, 0.16);
+	--mwm-panel-text: #2e2a24;
+	--mwm-panel-shadow: 0 14px 34px rgba(46, 42, 36, 0.14);
+	backdrop-filter: blur(14px);
 }
 
 .galaxy-panel-header {
@@ -557,7 +612,7 @@
 
 .mini-world-map-view.is-night-scheme,
 .theme-dark .mini-world-map-view:not(.is-day-scheme) {
-	--mwm-radial-bg: #0f1117;
+	--mwm-radial-bg: #1e1e1e;
 	--mwm-radial-text: #f8fafc;
 	--mwm-radial-label: #f8fafc;
 	--mwm-radial-label-root: #7c9cff;

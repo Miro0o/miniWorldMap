@@ -312,7 +312,7 @@ describe('radial layout', () => {
 		expect(spread).toBeLessThan(1.4);
 	});
 
-	it('keeps deep hierarchy rings progressing outward when arc space is available', () => {
+	it('spends extra radius on deep hierarchy bands while preserving inner ring spacing', () => {
 		const records: { path: string; basename: string; kind: 'folder' | 'note' }[] = [{ path: 'Root', basename: 'Root', kind: 'folder' }];
 		for (let branch = 0; branch < 10; branch++) {
 			const branchPath = `Root/Branch ${branch}`;
@@ -332,10 +332,17 @@ describe('radial layout', () => {
 		const hierarchyRings = layout.rings.filter((ring) => ring.depth > 0).sort((a, b) => a.depth - b.depth);
 		const gaps = hierarchyRings.slice(1).map((ring, index) => ring.radius - (hierarchyRings[index]?.radius ?? 0));
 		const averageGap = ((hierarchyRings[hierarchyRings.length - 1]?.radius ?? 0) - (hierarchyRings[0]?.radius ?? 0)) / Math.max(1, hierarchyRings.length - 1);
+		const innerGaps = gaps.slice(0, 1);
+		const middleGaps = gaps.slice(1, 4);
+		const outerGaps = gaps.slice(-3);
+		const averageOuterGap = outerGaps.reduce((sum, gap) => sum + gap, 0) / Math.max(1, outerGaps.length);
 
 		expect(layout.ringSpacing).toBeLessThan(900);
 		expect(Math.min(...gaps)).toBeGreaterThan(layout.ringSpacing * 0.78);
-		expect(averageGap).toBeLessThan(layout.ringSpacing * 1.55);
+		expect(Math.max(...innerGaps)).toBeLessThan(layout.ringSpacing * 1.55);
+		expect(Math.max(...middleGaps)).toBeGreaterThan(layout.ringSpacing * 1.55);
+		expect(averageGap).toBeGreaterThan(layout.ringSpacing * 1.55);
+		expect(averageOuterGap).toBeGreaterThan(layout.ringSpacing * 1.95);
 	});
 
 	it('gives crowded middle rings extra radial room on large maps', () => {
@@ -361,12 +368,14 @@ describe('radial layout', () => {
 		const ringsByDepth = new Map(layout.rings.map((ring) => [ring.depth, ring.radius]));
 		const firstGap = (ringsByDepth.get(1) ?? 0) - (ringsByDepth.get(0) ?? 0);
 		const middleGap = (ringsByDepth.get(2) ?? 0) - (ringsByDepth.get(1) ?? 0);
+		const laterMiddleGap = (ringsByDepth.get(3) ?? 0) - (ringsByDepth.get(2) ?? 0);
 
 		expect(firstGap).toBeGreaterThan(layout.ringSpacing * 0.9);
-		expect(middleGap).toBeGreaterThan(layout.ringSpacing * 1.12);
+		expect(middleGap).toBeGreaterThan(layout.ringSpacing * 1.35);
+		expect(laterMiddleGap).toBeGreaterThan(layout.ringSpacing * 1.35);
 	});
 
-	it('allocates baseline radius to crowded depths instead of blindly expanding sparse outer rings', () => {
+	it('keeps crowded baseline rings dominant while sparse deep tails form radial bands', () => {
 		const records: { path: string; basename: string; kind: 'folder' | 'note' }[] = [];
 		for (let index = 0; index < 180; index++) {
 			records.push({ path: `Entry ${index}.md`, basename: `Entry ${index}`, kind: 'note' });
@@ -389,10 +398,95 @@ describe('radial layout', () => {
 			.map((depth) => (ringsByDepth.get(depth) ?? 0) - (ringsByDepth.get(depth - 1) ?? 0))
 			.filter((gap) => gap > 0);
 		const averageSparseGap = sparseGaps.reduce((sum, gap) => sum + gap, 0) / Math.max(1, sparseGaps.length);
+		const lateSparseGaps = [7, 8, 9]
+			.map((depth) => (ringsByDepth.get(depth) ?? 0) - (ringsByDepth.get(depth - 1) ?? 0))
+			.filter((gap) => gap > 0);
+		const averageLateSparseGap = lateSparseGaps.reduce((sum, gap) => sum + gap, 0) / Math.max(1, lateSparseGaps.length);
 
 		expect(ringsByDepth.get(1) ?? 0).toBeGreaterThan(averageSparseGap * 3);
-		expect(averageSparseGap).toBeGreaterThan(layout.ringSpacing * 0.78);
-		expect(averageSparseGap).toBeLessThan(layout.ringSpacing * 1.08);
+		expect(averageSparseGap).toBeGreaterThan(layout.ringSpacing * 1.2);
+		expect(averageLateSparseGap).toBeGreaterThan(averageSparseGap * 1.16);
+	});
+
+	it('allocates more root angle to dense early subtrees', () => {
+		const records: { path: string; basename: string; kind: 'folder' | 'note' }[] = [
+			{ path: 'Root', basename: 'Root', kind: 'folder' },
+			{ path: 'Root/Dense', basename: 'Dense', kind: 'folder' },
+		];
+		for (let group = 0; group < 14; group++) {
+			const groupPath = `Root/Dense/Group ${group}`;
+			records.push({ path: groupPath, basename: `Group ${group}`, kind: 'folder' });
+			for (let leaf = 0; leaf < 6; leaf++) {
+				records.push({ path: `${groupPath}/Leaf ${leaf}.md`, basename: `Leaf ${leaf}`, kind: 'note' });
+			}
+		}
+		for (let index = 0; index < 7; index++) {
+			const sparsePath = `Root/Sparse ${index}`;
+			records.push({ path: sparsePath, basename: `Sparse ${index}`, kind: 'folder' });
+			records.push({ path: `${sparsePath}/Note.md`, basename: 'Note', kind: 'note' });
+		}
+		const m = buildWorldMap(records, {}, {}, DEFAULT_RADIAL_SETTINGS);
+		const state = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
+		state.rootPath = 'Root';
+		state.showLinkOverlay = false;
+		state.nodeLimit = 1200;
+		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
+		const layout = layoutRadialGraph(graph, { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 0 });
+		const denseSpan = layout.positions.get('Root/Dense')?.sectorSpan ?? 0;
+		const denseAngle = layout.positions.get('Root/Dense')?.angle ?? 0;
+		const denseGroupAngles = Array.from({ length: 14 }, (_, index) => layout.positions.get(`Root/Dense/Group ${index}`)?.angle ?? denseAngle);
+		const denseGroupSpread = angleSpreadAround(denseAngle, denseGroupAngles);
+		const sparseSpans = Array.from({ length: 7 }, (_, index) => layout.positions.get(`Root/Sparse ${index}`)?.sectorSpan ?? 0);
+		const averageSparseSpan = sparseSpans.reduce((sum, span) => sum + span, 0) / Math.max(1, sparseSpans.length);
+
+		expect(denseSpan).toBeGreaterThan(Math.PI);
+		expect(denseSpan).toBeGreaterThan(averageSparseSpan * 24);
+		expect(denseGroupSpread).toBeGreaterThan(Math.min(denseSpan * 0.62, Math.PI * 1.25));
+		expect(hierarchyRouteCrossings(graph, layout)).toBe(0);
+	});
+
+	it('keeps a crowded lower perimeter expanded when one branch continues deeper', () => {
+		const records: { path: string; basename: string; kind: 'folder' | 'note' }[] = [{ path: 'Map', basename: 'Map', kind: 'folder' }];
+		for (let area = 0; area < 18; area++) {
+			const areaPath = `Map/Area ${area}`;
+			const shelfPath = `${areaPath}/Shelf`;
+			const clusterPath = `${shelfPath}/Cluster`;
+			records.push({ path: areaPath, basename: `Area ${area}`, kind: 'folder' });
+			records.push({ path: shelfPath, basename: 'Shelf', kind: 'folder' });
+			records.push({ path: clusterPath, basename: 'Cluster', kind: 'folder' });
+			for (let leaf = 0; leaf < 5; leaf++) {
+				records.push({ path: `${clusterPath}/Leaf ${leaf}.md`, basename: `Leaf ${leaf}`, kind: 'note' });
+			}
+		}
+		let deepPath = 'Map/Deep';
+		records.push({ path: deepPath, basename: 'Deep', kind: 'folder' });
+		const routeIds = [deepPath];
+		for (let depth = 0; depth < 8; depth++) {
+			deepPath = `${deepPath}/Layer ${depth}`;
+			records.push({ path: deepPath, basename: `Layer ${depth}`, kind: 'folder' });
+			routeIds.push(deepPath);
+		}
+		const m = buildWorldMap(records, {}, {}, DEFAULT_RADIAL_SETTINGS);
+		const state = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
+		state.rootPath = 'Map';
+		state.showLinkOverlay = false;
+		state.atlasDepth = 20;
+		state.nodeLimit = 2500;
+		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
+		const layout = layoutRadialGraph(graph, { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 0 });
+		const ringsByDepth = new Map(layout.rings.map((ring) => [ring.depth, ring.radius]));
+		const lowerPerimeterGap = (ringsByDepth.get(4) ?? 0) - (ringsByDepth.get(3) ?? 0);
+		const previousGap = (ringsByDepth.get(3) ?? 0) - (ringsByDepth.get(2) ?? 0);
+		const routeRadii = routeIds.map((id) => layout.positions.get(id)?.radius ?? 0);
+		const routeAngles = routeIds.map((id) => layout.positions.get(id)?.angle ?? 0);
+		const angleSteps = routeAngles.slice(1).map((angle, index) => angleDelta(angle, routeAngles[index] ?? 0));
+
+		expect(lowerPerimeterGap).toBeGreaterThan(previousGap * 1.18);
+		expect(lowerPerimeterGap).toBeGreaterThan(layout.ringSpacing * 1.45);
+		expect((routeRadii[routeRadii.length - 1] ?? 0) - (ringsByDepth.get(4) ?? 0)).toBeLessThan(layout.ringSpacing * 18);
+		expect(routeRadii).toEqual([...routeRadii].sort((a, b) => a - b));
+		expect(Math.max(...angleSteps)).toBeLessThan(0.36);
+		expect(hierarchyRouteCrossings(graph, layout)).toBe(0);
 	});
 
 	it('keeps narrow deep routes growing outward on sparse outer rings', () => {
@@ -416,10 +510,14 @@ describe('radial layout', () => {
 		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
 		const layout = layoutRadialGraph(graph, { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 0 });
 		const routeRadii = routeIds.map((id) => layout.positions.get(id)?.radius ?? 0);
+		const routeAngles = routeIds.map((id) => layout.positions.get(id)?.angle ?? 0);
 		const outerSteps = routeRadii.slice(3).map((radius, index) => radius - (routeRadii[index + 2] ?? 0));
+		const angleSteps = routeAngles.slice(1).map((angle, index) => angleDelta(angle, routeAngles[index] ?? 0));
 
 		expect(Math.min(...outerSteps)).toBeGreaterThan(layout.ringSpacing * 0.36);
+		expect(Math.max(...angleSteps)).toBeLessThan(0.36);
 		expect(routeRadii).toEqual([...routeRadii].sort((a, b) => a - b));
+		expect(hierarchyRouteCrossings(graph, layout)).toBe(0);
 	});
 
 	it('keeps vault-root outer hierarchy routes advancing outward near the perimeter', () => {

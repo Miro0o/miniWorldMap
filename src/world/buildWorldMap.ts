@@ -7,6 +7,7 @@ export function buildWorldMap(
 	resolvedLinks: LinkTable,
 	unresolvedLinks: LinkTable,
 	settings: Pick<RadialSettings, 'includeUnresolvedLinks' | 'ignoreFolders'>,
+	rootTitle = ROOT_TITLE,
 ): WorldModel {
 	const nodes = new Map<string, WorldNode>();
 	const hierarchyEdges: WorldEdge[] = [];
@@ -27,7 +28,7 @@ export function buildWorldMap(
 	addNode({
 		id: ROOT_ID,
 		path: ROOT_ID,
-		title: ROOT_TITLE,
+		title: rootTitle.trim() || ROOT_TITLE,
 		type: 'folder',
 		parentId: null,
 		depth: 0,
