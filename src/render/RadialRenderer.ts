@@ -236,9 +236,6 @@ export class RadialRenderer {
 	showLoadingMask(text: string): void {
 		cancelAnimationFrame(this.revealFrame);
 		this.revealDepthLimit = Number.POSITIVE_INFINITY;
-		this.container.style.setProperty('--mwm-reveal-x', '50%');
-		this.container.style.setProperty('--mwm-reveal-y', '50%');
-		this.container.style.setProperty('--mwm-reveal-radius', '0px');
 		this.container.removeClass('is-radial-revealing');
 		this.container.removeClass('is-radial-depth-revealing');
 		this.container.addClass('is-radial-preparing');

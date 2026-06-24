@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2
+
+- Address Obsidian community plugin review findings around settings APIs, command names, deprecated slider tooltips, direct static styles, and config folder handling.
+- Raise the minimum supported Obsidian version to 1.13.0 for the current settings definitions API.
+- Remove reveal CSS that relied on partially supported browser features in older Obsidian builds.
+- Tighten 2D neighbor list typing and add regression coverage for configured vault folders.
+
 ## 0.2.1
 
 - Add default day/night map background fallbacks when the active Obsidian theme cannot provide a matching background color.

@@ -35,9 +35,8 @@ function normalizeCssColor(value: string): string | null {
 	const doc = activeDocument;
 	const body = doc.body;
 	const probe = doc.createElement('span');
-	probe.style.color = value;
+	probe.setCssStyles({ color: value, display: 'none' });
 	if (!probe.style.color) return null;
-	probe.style.display = 'none';
 	body.appendChild(probe);
 	try {
 		const computed = doc.defaultView?.getComputedStyle(probe).color ?? getComputedStyle(probe).color;

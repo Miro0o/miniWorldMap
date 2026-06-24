@@ -1147,11 +1147,6 @@
 	height: 16px;
 }
 
-.mwm-radial-host.is-radial-revealing .mwm-radial-canvas,
-.mwm-radial-host.is-radial-revealing .mwm-radial-labels {
-	clip-path: circle(var(--mwm-reveal-radius, 0px) at var(--mwm-reveal-x, 50%) var(--mwm-reveal-y, 50%));
-}
-
 .mwm-radial-host.is-radial-preparing .mwm-radial-canvas,
 .mwm-radial-host.is-radial-preparing .mwm-radial-labels {
 	opacity: 0;

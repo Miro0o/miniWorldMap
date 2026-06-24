@@ -1,8 +1,8 @@
 {
 	"id": "mini-world-map",
 	"name": "Mini World Map",
-	"version": "0.2.1",
-	"minAppVersion": "1.5.0",
+	"version": "0.2.2",
+	"minAppVersion": "1.13.0",
 	"description": "Visualize your vault as a hierarchy-first world map with internal links layered on top.",
 	"author": "Miro0o and Codex",
 	"authorUrl": "https://github.com/Miro0o",

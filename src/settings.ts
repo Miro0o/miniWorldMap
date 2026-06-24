@@ -141,7 +141,7 @@ export const DEFAULT_RADIAL_SETTINGS: RadialSettings = {
 	swirlStrength: 0,
 	showRingGuides: false,
 	hiddenLegendItems: [],
-	ignoreFolders: ['.git', '.obsidian'],
+	ignoreFolders: ['.git'],
 };
 
 export const DEFAULT_GALAXY_SETTINGS: GalaxySettings = {
@@ -179,6 +179,15 @@ export function mergeSettings(saved: unknown): MiniWorldMapSettings {
 		radial,
 		galaxy3d: mergeGalaxySettings(galaxySource),
 	};
+}
+
+export function applyVaultConfigDirDefault(settings: MiniWorldMapSettings, saved: unknown, configDir: string): MiniWorldMapSettings {
+	if (hasSavedIgnoreFolders(saved)) return settings;
+	const normalized = normalizeIgnoredFolder(configDir);
+	if (normalized && !settings.radial.ignoreFolders.includes(normalized)) {
+		settings.radial.ignoreFolders = [...settings.radial.ignoreFolders, normalized];
+	}
+	return settings;
 }
 
 export function mergeRadialSettings(saved: unknown): RadialSettings {
@@ -346,6 +355,19 @@ export function clampNumber(value: unknown, min: number, max: number, fallback: 
 
 function finiteNumber(value: unknown, fallback: number): number {
 	return typeof value === 'number' && Number.isFinite(value) ? value : Number.parseFloat(String(value)) || fallback;
+}
+
+function hasSavedIgnoreFolders(saved: unknown): boolean {
+	const raw = isRecord(saved) ? saved : {};
+	const radial = isRecord(raw['radial']) ? raw['radial'] : raw;
+	return Array.isArray(radial['ignoreFolders']);
+}
+
+function normalizeIgnoredFolder(path: string): string {
+	return path
+		.trim()
+		.replace(/\\/g, '/')
+		.replace(/^\/+|\/+$/g, '');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

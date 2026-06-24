@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mergeSettings } from '../src/settings';
+import { applyVaultConfigDirDefault, mergeSettings } from '../src/settings';
 
 describe('Mini World Map settings migration', () => {
 	it('defaults to 2D radial mode and preserves legacy radial keys', () => {
@@ -31,6 +31,14 @@ describe('Mini World Map settings migration', () => {
 		expect(mergeSettings({}).radial.hoverTargetMode).toBe('nodes');
 		expect(mergeSettings({ radial: { hoverTargetMode: 'links' } }).radial.hoverTargetMode).toBe('links');
 		expect(mergeSettings({ radial: { hoverTargetMode: 'anything' } }).radial.hoverTargetMode).toBe('nodes');
+	});
+
+	it('adds the current vault config folder to default ignored folders', () => {
+		const settings = applyVaultConfigDirDefault(mergeSettings({}), {}, '.custom-config');
+		expect(settings.radial.ignoreFolders).toContain('.custom-config');
+
+		const explicit = applyVaultConfigDirDefault(mergeSettings({ radial: { ignoreFolders: ['Archive'] } }), { radial: { ignoreFolders: ['Archive'] } }, '.custom-config');
+		expect(explicit.radial.ignoreFolders).toEqual(['Archive']);
 	});
 
 	it('preserves intentional nested 2D note-link visibility', () => {

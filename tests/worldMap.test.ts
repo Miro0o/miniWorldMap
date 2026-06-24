@@ -16,7 +16,7 @@ const records = [
 ];
 
 function model(overrides: Partial<typeof DEFAULT_RADIAL_SETTINGS> = {}) {
-	const settings = { ...DEFAULT_RADIAL_SETTINGS, ...overrides };
+	const settings = { ...DEFAULT_RADIAL_SETTINGS, ignoreFolders: [...DEFAULT_RADIAL_SETTINGS.ignoreFolders, '.obsidian'], ...overrides };
 	return buildWorldMap(
 		records,
 		{

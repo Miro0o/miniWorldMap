@@ -2,7 +2,7 @@ import type { App } from 'obsidian';
 import { TFile, TFolder } from 'obsidian';
 import type { RadialSettings } from '../settings';
 import { buildWorldMap, normalizeVaultPath } from './buildWorldMap';
-import type { LinkTable, VisibleGraphState, VisibleWorldGraph, WorldFileRecord, WorldModel, WorldNode } from './types';
+import type { LinkTable, VisibleGraphState, VisibleWorldGraph, WorldEdge, WorldFileRecord, WorldModel, WorldNode } from './types';
 import { ROOT_ID } from './types';
 import { buildVisibleWorldGraph, visualNodeId } from './visibleGraph';
 
@@ -35,12 +35,12 @@ export class WorldMapIndex {
 		};
 	}
 
-	get linkEdgesBySource() {
-		return this.model?.linkEdgesBySource ?? new Map();
+	get linkEdgesBySource(): Map<string, WorldEdge[]> {
+		return this.model?.linkEdgesBySource ?? new Map<string, WorldEdge[]>();
 	}
 
-	get linkEdgesByTarget() {
-		return this.model?.linkEdgesByTarget ?? new Map();
+	get linkEdgesByTarget(): Map<string, WorldEdge[]> {
+		return this.model?.linkEdgesByTarget ?? new Map<string, WorldEdge[]>();
 	}
 
 	rebuild(settings: RadialSettings = this.settings): void {
