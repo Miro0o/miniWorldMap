@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.4
+
+- Move 3D node inspection details into the side panel.
+- Improve long label, pin, neighbor, and button wrapping in the map panels.
+- Type Obsidian saved plugin data as `unknown` before settings migration to avoid unsafe assignment warnings.
+
 ## 0.2.3
 
 - Add a 2D Complete map action that shows the vault root with expanded node, link, depth, and outside-link detail budgets.

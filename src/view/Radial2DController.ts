@@ -572,13 +572,16 @@ export class Radial2DController extends Component {
 			[this.t('inspect.outgoing', { count: outgoing.length }), outgoing, 'target'],
 			[this.t('inspect.backlinks', { count: incoming.length }), incoming, 'source'],
 		] as const) {
-			parent.createDiv({ cls: 'mwm-side-heading', text: title });
-			if (edges.length === 0) parent.createDiv({ cls: 'mwm-side-muted', text: this.t('common.none') });
+			const section = parent.createDiv({ cls: 'mwm-neighbor-section' });
+			section.createDiv({ cls: 'mwm-side-heading', text: title });
+			if (edges.length === 0) section.createDiv({ cls: 'mwm-side-muted', text: this.t('common.none') });
+			const list = section.createDiv({ cls: 'mwm-neighbor-list' });
 			for (const edge of edges) {
 				const neighbor = this.index.nodes.get(edge[side]);
 				if (!neighbor) continue;
 				const label = `${neighbor.title} (${edge.weight})`;
-				const button = parent.createEl('button', { cls: 'mwm-link-row', text: label, attr: { title: label } });
+				const button = list.createEl('button', { cls: 'mwm-link-row', attr: { title: label } });
+				button.createSpan({ cls: 'mwm-link-row-label', text: label });
 				button.addEventListener('click', () => this.inspectNode(neighbor.id));
 			}
 		}
@@ -636,14 +639,18 @@ export class Radial2DController extends Component {
 			else this.selectedPinIds.delete(pin.id);
 			this.renderPanel();
 		});
-		const main = row.createEl('button', { cls: 'mwm-pin-main', attr: { type: 'button', title: pin.path || pin.title } });
+		const main = row.createEl('button', { cls: 'mwm-pin-main', attr: { type: 'button' } });
 		main.addEventListener('click', () => this.locatePin(pin));
-		main.createDiv({ cls: 'mwm-pin-title', text: pin.title });
-		main.createDiv({ cls: 'mwm-pin-meta', text: `${this.pinKindLabel(pin)} - ${pin.path || '/'}` });
-		this.button(row, pin.active ? this.t('pins.hideHighlight') : this.t('pins.showHighlight'), () => this.togglePinHighlight(pin.id));
-		this.button(row, this.t('common.inspect'), () => this.inspectPin(pin));
-		if (pin.groupId) this.button(row, this.t('common.ungroup'), () => this.ungroupPin(pin.id));
-		this.button(row, 'X', () => this.removePin(pin.id));
+		const displayTitle = this.pinDisplayTitle(pin);
+		const displayPath = pin.path || '/';
+		main.setAttr('title', `${displayTitle}\n${this.pinKindLabel(pin)} - ${displayPath}`);
+		main.createDiv({ cls: 'mwm-pin-title', text: displayTitle });
+		main.createDiv({ cls: 'mwm-pin-meta', text: displayPath });
+		const actions = row.createDiv({ cls: 'mwm-pin-actions' });
+		this.button(actions, pin.active ? this.t('pins.hideHighlight') : this.t('pins.showHighlight'), () => this.togglePinHighlight(pin.id));
+		this.button(actions, this.t('common.inspect'), () => this.inspectPin(pin));
+		if (pin.groupId) this.button(actions, this.t('common.ungroup'), () => this.ungroupPin(pin.id));
+		this.button(actions, 'X', () => this.removePin(pin.id));
 	}
 
 	private renderViewPage(parent: HTMLElement): void {
@@ -990,7 +997,8 @@ export class Radial2DController extends Component {
 	}
 
 	private button(parent: HTMLElement, label: string, onClick: () => void, active = false): HTMLButtonElement {
-		const button = parent.createEl('button', { cls: active ? 'is-active' : '', text: label, attr: { title: label } });
+		const button = parent.createEl('button', { cls: active ? 'is-active' : '', attr: { title: label } });
+		button.createSpan({ cls: 'mwm-button-label', text: label });
 		button.addEventListener('click', onClick);
 		return button;
 	}
@@ -1160,6 +1168,23 @@ export class Radial2DController extends Component {
 
 	private pinKindLabel(pin: PinPath): string {
 		return pin.kind === 'link' ? this.t('inspect.linkOverlay') : this.t(`hover.${normalizeHoverHighlightMode(pin.mode)}`);
+	}
+
+	private pinDisplayTitle(pin: PinPath): string {
+		if (pin.kind === 'link') {
+			const [source = pin.source ?? '', target = pin.target ?? ''] = pin.path.split(' -> ');
+			const sourceName = this.pathLeaf(source) || this.pathLeaf(pin.source ?? '') || this.t('common.source');
+			const targetName = this.pathLeaf(target) || this.pathLeaf(pin.target ?? '') || this.t('common.target');
+			return `${sourceName} -> ${targetName}`;
+		}
+		return this.pathLeaf(pin.path) || pin.title;
+	}
+
+	private pathLeaf(path: string): string {
+		const clean = path.trim().replace(/[/\\]+$/, '');
+		if (!clean || clean === '/') return '';
+		const leaf = clean.split(/[/\\]/).filter(Boolean).pop() ?? clean;
+		return leaf.endsWith('.md') ? leaf.slice(0, -3) : leaf;
 	}
 
 	private clearDisallowedHoverTargets(): void {

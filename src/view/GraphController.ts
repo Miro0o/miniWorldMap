@@ -1,5 +1,5 @@
 import type { App } from 'obsidian';
-import { Menu, Notice, Platform, debounce, setIcon } from 'obsidian';
+import { Menu, Notice, Platform, TFile, debounce, setIcon } from 'obsidian';
 import { Spherical, Vector3 } from 'three';
 import type { BenchResult } from '../types';
 import type { GalaxySettings, Language, ViewMode } from '../settings';
@@ -18,7 +18,7 @@ import { DAYLIGHT, DEEP_SPACE, NIGHT } from '../render/presets';
 import type { VisualTokens } from '../render/presets';
 import { resolveObsidianBackground } from '../render/obsidianTheme';
 import { CameraDirector } from '../interactions/CameraDirector';
-import { ControlPanel } from '../overlay/ControlPanel';
+import { ControlPanel, type PanelInspectNode } from '../overlay/ControlPanel';
 import { OverlayManager } from '../overlay/OverlayManager';
 import { NodeSearchModal } from './SearchModal';
 import { collectFrames, observeLongTasks, writeBenchResult, sleep } from '../bench/bench';
@@ -104,10 +104,7 @@ export class GraphController {
 			onResetView: () => this.recenter(),
 		});
 
-		this.overlay = new OverlayManager(this.contentEl, this.app, renderer, {
-			openNote: (id) => void this.app.workspace.openLinkText(id, '', true),
-			focusNode: (i) => this.selectNode(i, true),
-		}, this.language);
+		this.overlay = new OverlayManager(this.contentEl, renderer);
 		this.overlay.setData(this.store.data, this.graphRadius);
 
 		this.applySettings();
@@ -275,7 +272,7 @@ export class GraphController {
 		const prev = this.tier.id;
 		this.tier = this.pickTier();
 		this.renderer?.applyTier(this.tier, this.settings.bloom.strength);
-		this.overlay?.setBudgets(this.tier.hubLabels, this.tier.neighborLabels, this.tier.id === 'mobile');
+		this.overlay?.setBudgets(this.tier.hubLabels, this.tier.neighborLabels);
 		this.contentEl.toggleClass('gx-mobile', this.tier.id === 'mobile');
 		const total = this.app.vault.getMarkdownFiles().length;
 		this.store.setCaps(this.tier.nodeCap, this.tier.linkCap); // 变化时触发重建
@@ -454,6 +451,7 @@ export class GraphController {
 		renderer.setFocus(index, neighbors);
 		renderer.setSelectedLinks(linkIdx);
 		this.overlay?.setSelection(index, neighbors);
+		this.panel?.setInspectNode(this.panelInspectNode(index), true);
 		if (fly) {
 			const pos = renderer.nodePosition(index, new Vector3());
 			// 邻居质心方向：到达后环绕优先扫过链接密集的一侧
@@ -475,6 +473,31 @@ export class GraphController {
 		this.renderer?.setFocus(-1, null);
 		this.renderer?.setSelectedLinks([]);
 		this.overlay?.setSelection(-1, new Set());
+		this.panel?.setInspectNode(null);
+	}
+
+	private panelInspectNode(index: number): PanelInspectNode | null {
+		const node = this.store.data.nodes[index];
+		if (!node) return null;
+		const file = node.unresolved ? null : this.app.vault.getAbstractFileByPath(node.id);
+		const tfile = file instanceof TFile ? file : null;
+		const folder = node.unresolved ? this.tt('3d.searchUnresolved') : node.id.includes('/') ? node.id.slice(0, node.id.lastIndexOf('/')) : this.tt('3d.card.root');
+		return {
+			title: node.name,
+			path: node.unresolved ? node.id : node.id || this.tt('3d.card.root'),
+			folder,
+			type: node.unresolved ? this.tt('3d.searchUnresolved') : this.tt('3d.inspect.note'),
+			inDegree: node.inDegree,
+			outDegree: node.outDegree,
+			modified: tfile ? new Date(tfile.stat.mtime).toLocaleDateString(this.language === 'zh' ? 'zh-CN' : 'en-US') : null,
+			canOpen: !node.unresolved,
+		};
+	}
+
+	private openSelectedNode(): void {
+		const node = this.store.data.nodes[this.selected];
+		if (!node || node.unresolved) return;
+		void this.app.workspace.openLinkText(node.id, '', true);
 	}
 
 	private flyToSelected(): void {
@@ -605,6 +628,8 @@ export class GraphController {
 				this.saveSoon();
 			},
 			onSearch: () => this.openSearch(),
+			onOpenSelected: () => this.openSelectedNode(),
+			onFocusSelected: () => this.flyToSelected(),
 			onReset: () => {
 				Object.assign(this.settings.bloom, DEFAULT_GALAXY_SETTINGS.bloom);
 				Object.assign(this.settings.physics, DEFAULT_GALAXY_SETTINGS.physics);
@@ -644,7 +669,6 @@ export class GraphController {
 				item.onClick(() => {
 					if (value === this.language) return;
 					this.language = value;
-					this.overlay?.setLanguage(value);
 					this.panel?.setLanguage(value);
 					this.onLanguage?.(value);
 				});

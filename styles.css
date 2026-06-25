@@ -18,6 +18,8 @@
 /* ---------- 控制面板 ---------- */
 
 .galaxy-panel {
+	--mwm-action-button-min-height: 40px;
+	--mwm-link-row-min-height: 46px;
 	position: absolute;
 	top: 10px;
 	left: 10px;
@@ -138,6 +140,7 @@
 .galaxy-panel-body {
 	padding: 0 10px 10px;
 	overflow-y: auto;
+	overflow-x: hidden;
 	min-height: 0;
 	scrollbar-gutter: stable;
 }
@@ -159,8 +162,8 @@
 }
 
 .galaxy-panel-row {
-	display: grid;
-	grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+	display: flex;
+	flex-wrap: wrap;
 	gap: 6px;
 	margin-top: 10px;
 	align-items: stretch;
@@ -170,7 +173,8 @@
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	min-height: 28px;
+	flex: 1 1 132px;
+	min-height: var(--mwm-action-button-min-height);
 	font-size: 11px;
 	line-height: 1.2;
 	padding: 5px 8px;
@@ -183,7 +187,17 @@
 	min-width: 0;
 	max-width: 100%;
 	white-space: normal;
-	overflow-wrap: break-word;
+	overflow-wrap: anywhere;
+	word-break: break-word;
+	box-sizing: border-box;
+}
+
+.galaxy-panel-row button .mwm-button-label {
+	display: block;
+	max-width: 100%;
+	min-width: 0;
+	overflow-wrap: anywhere;
+	word-break: break-word;
 }
 
 .galaxy-panel-row button:hover {
@@ -343,98 +357,6 @@
 	font-weight: 600;
 }
 
-.gx-card {
-	position: absolute;
-	top: 0;
-	left: 0;
-	z-index: 6; /* 卡片永远盖住浮层标签（G2 bug 修复） */
-	width: 280px;
-	transform: translate3d(-1000px, -1000px, 0);
-	pointer-events: auto;
-	border-radius: 10px;
-	padding: 12px 14px;
-	font-size: 12px;
-	background: rgba(10, 14, 24, 0.78);
-	backdrop-filter: blur(16px);
-	border: 1px solid rgba(255, 255, 255, 0.08);
-	color: #e8ecf6;
-}
-
-.gx-daylight .gx-card {
-	background: rgba(252, 250, 245, 0.88);
-	border: 1px solid rgba(31, 41, 51, 0.14);
-	color: #1f2933;
-}
-
-.gx-card-title {
-	font-size: 15px;
-	font-weight: 600;
-	margin-bottom: 4px;
-}
-
-.gx-card-meta {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	font-size: 11px;
-	opacity: 0.7;
-}
-
-.gx-card-dot {
-	width: 8px;
-	height: 8px;
-	border-radius: 50%;
-	flex-shrink: 0;
-}
-
-.gx-card-tags {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 4px;
-	margin-top: 8px;
-}
-
-.gx-card-tag {
-	font-size: 10px;
-	padding: 1px 7px;
-	border-radius: 8px;
-	background: rgba(127, 155, 255, 0.18);
-	border: 1px solid rgba(127, 155, 255, 0.3);
-}
-
-.gx-card-stats {
-	margin-top: 8px;
-	font-size: 11px;
-	opacity: 0.75;
-}
-
-.gx-card-snippet {
-	margin-top: 6px;
-	font-size: 11px;
-	line-height: 1.5;
-	opacity: 0.65;
-	max-height: 50px;
-	overflow: hidden;
-}
-
-.gx-card-actions {
-	display: flex;
-	gap: 6px;
-	margin-top: 10px;
-}
-
-.gx-card-actions button {
-	flex: 1;
-	font-size: 11px;
-	padding: 3px 8px;
-	background: rgba(127, 127, 127, 0.12);
-	border: 1px solid rgba(127, 127, 127, 0.25);
-	color: inherit;
-	border-radius: 6px;
-	cursor: pointer;
-	box-shadow: none;
-}
-
 .gx-search-path {
 	font-size: 11px;
 	color: var(--text-muted);
@@ -559,20 +481,6 @@
 }
 
 /* ---------- M4 移动端 ---------- */
-
-/* .gx-mobile .gx-card 比 .gx-card 更具体 → 靠选择器特异性覆盖 left/top/transform
-   （JS 已在移动端清掉内联 transform，见 OverlayManager.setSelection） */
-.gx-mobile .gx-card {
-	left: 8px;
-	right: 8px;
-	top: auto;
-	/* 自适应：实测 navbar 重叠（--gx-bottom-inset）与 iPhone 横条安全区取大者 */
-	bottom: calc(10px + max(var(--gx-bottom-inset, 0px), env(safe-area-inset-bottom, 0px)));
-	width: auto;
-	max-height: 40vh;
-	overflow-y: auto;
-	transform: none;
-}
 
 .gx-mask-btn {
 	font-size: 13px;
@@ -1027,10 +935,24 @@
 	opacity: 0.72;
 }
 
+.mwm-neighbor-section {
+	display: grid;
+	gap: 6px;
+	min-width: 0;
+}
+
+.mwm-neighbor-list {
+	display: grid;
+	grid-auto-rows: minmax(var(--mwm-link-row-min-height), 1fr);
+	gap: 6px;
+	min-width: 0;
+}
+
 .mwm-pin-group {
 	display: grid;
 	gap: 6px;
 	margin-top: 8px;
+	min-width: 0;
 }
 
 .mwm-pin-group-header {
@@ -1093,35 +1015,92 @@
 	cursor: pointer;
 	box-shadow: none;
 	white-space: normal;
-	overflow-wrap: break-word;
+	overflow-wrap: anywhere;
+	word-break: break-word;
+	box-sizing: border-box;
+}
+
+.mwm-link-row {
+	display: flex;
+	align-items: center;
+	min-height: var(--mwm-link-row-min-height);
+	padding: 6px 8px;
+}
+
+.mwm-link-row-label {
+	display: block;
+	width: 100%;
+	min-width: 0;
+	overflow-wrap: anywhere;
+	word-break: break-word;
+	hyphens: auto;
 }
 
 .mwm-pin-row,
 .mwm-pin-group-row {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
 	gap: 6px;
+	min-width: 0;
+}
+
+.mwm-pin-row {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	align-items: start;
+	gap: 6px 8px;
+}
+
+.mwm-pin-group-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+}
+
+.mwm-pin-group-row input {
+	width: 100%;
+	min-width: 0;
+	max-width: 100%;
+	box-sizing: border-box;
 }
 
 .mwm-pin-row.is-muted {
 	opacity: 0.58;
 }
 
-.mwm-pin-row > button:not(.mwm-pin-main),
 .mwm-pin-group-row > button,
-.mwm-pin-group-header > button {
-	flex: 0 0 auto;
+.mwm-pin-group-header > button,
+.mwm-pin-actions > button {
 	font-size: 10px;
 	padding: 3px 5px;
 }
 
+.mwm-pin-check {
+	margin-top: 14px;
+}
+
 .mwm-pin-main {
-	flex: 1;
-	flex-basis: 150px;
+	display: block;
+	grid-column: 2;
 	min-width: 0;
+	overflow-x: hidden;
 	white-space: normal;
-	overflow: hidden;
+	text-align: left;
+}
+
+.mwm-pin-actions {
+	grid-column: 2;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 5px;
+	min-width: 0;
+}
+
+.mwm-pin-actions > button {
+	flex: 1 1 72px;
+	min-width: 0;
+	max-width: 100%;
+	white-space: normal;
+	overflow-wrap: anywhere;
+	word-break: break-word;
 }
 
 .mwm-pin-title {
@@ -1133,9 +1112,19 @@
 
 .mwm-pin-meta {
 	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	overflow-x: hidden;
+	overflow-y: visible;
+	text-overflow: clip;
+	white-space: normal;
+	overflow-wrap: break-word;
+	word-break: normal;
+}
+
+.mwm-scroll-path {
+	max-height: 56px;
+	overflow-x: hidden;
+	overflow-y: auto;
+	scrollbar-gutter: stable;
 }
 
 .mwm-floating-controls {

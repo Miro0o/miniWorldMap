@@ -27,7 +27,7 @@ export default class MiniWorldMapPlugin extends Plugin {
 
 	async onload(): Promise<void> {
 		console.info('[Mini World Map] loading');
-		const saved = await this.loadData();
+		const saved: unknown = await this.loadData();
 		this.settings = applyVaultConfigDirDefault(mergeSettings(saved), saved, this.app.vault.configDir);
 		this.registerView(VIEW_TYPE_MINI_WORLD_MAP, (leaf) => new MiniWorldMapView(leaf, this));
 

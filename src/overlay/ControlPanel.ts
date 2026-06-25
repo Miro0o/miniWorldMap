@@ -8,7 +8,18 @@ import type { VisualTokens } from '../render/presets';
 import { t, viewModeLabel } from '../i18n';
 import { Slider } from './Slider';
 
-type PanelPage = 'view' | 'appearance' | 'physics' | 'motion' | 'advanced';
+type PanelPage = 'inspect' | 'view' | 'appearance' | 'physics' | 'motion' | 'advanced';
+
+export interface PanelInspectNode {
+	title: string;
+	path: string;
+	folder: string;
+	type: string;
+	inDegree: number;
+	outDegree: number;
+	modified: string | null;
+	canOpen: boolean;
+}
 
 export interface ControlPanelCallbacks {
 	onViewMode?: (mode: ViewMode) => void;
@@ -29,6 +40,8 @@ export interface ControlPanelCallbacks {
 	onSizeBy: () => void;
 	onQuality: () => void;
 	onSearch: () => void;
+	onOpenSelected: () => void;
+	onFocusSelected: () => void;
 	onReset: () => void;
 	runScenario: (s: 'S1' | 'S2' | 'S3') => void;
 }
@@ -46,6 +59,7 @@ export class ControlPanel {
 	private sizeBySelect: HTMLSelectElement | null = null;
 	private qualityBtn: HTMLButtonElement | null = null;
 	private styleChips: HTMLButtonElement[] = [];
+	private inspectNode: PanelInspectNode | null = null;
 
 	constructor(
 		parent: HTMLElement,
@@ -87,6 +101,7 @@ export class ControlPanel {
 		const settings = this.body.createDiv({ cls: 'mwm-panel-settings mwm-3d-settings' });
 		const tabs = settings.createDiv({ cls: 'mwm-panel-tabs' });
 		for (const [id, label] of [
+			['inspect', this.tt('tab.inspect')],
 			['view', this.tt('tab.view')],
 			['appearance', this.tt('tab.appearance')],
 			['physics', this.tt('tab.physics')],
@@ -101,11 +116,41 @@ export class ControlPanel {
 		}
 
 		const pageEl = settings.createDiv({ cls: 'mwm-panel-page' });
-		if (this.page === 'appearance') this.renderAppearancePage(pageEl);
+		if (this.page === 'inspect') this.renderInspectPage(pageEl);
+		else if (this.page === 'appearance') this.renderAppearancePage(pageEl);
 		else if (this.page === 'physics') this.renderPhysicsPage(pageEl);
 		else if (this.page === 'motion') this.renderMotionPage(pageEl);
 		else if (this.page === 'advanced') this.renderAdvancedPage(pageEl);
 		else this.renderViewPage(pageEl);
+	}
+
+	private renderInspectPage(parent: HTMLElement): void {
+		const node = this.inspectNode;
+		if (!node) {
+			parent.createDiv({ cls: 'mwm-side-muted', text: this.tt('3d.inspect.none') });
+			return;
+		}
+		parent.createDiv({ cls: 'mwm-side-title', text: node.title });
+		const path = parent.createDiv({ cls: 'mwm-side-path mwm-scroll-path', text: node.path || this.tt('3d.card.root') });
+		path.setAttr('title', node.path || this.tt('3d.card.root'));
+		const facts = parent.createDiv({ cls: 'mwm-facts' });
+		for (const [label, value] of [
+			[this.tt('inspect.type'), node.type],
+			[this.tt('inspect.folder'), node.folder || this.tt('3d.card.root')],
+			[this.tt('inspect.in'), String(node.inDegree)],
+			[this.tt('inspect.out'), String(node.outDegree)],
+			...(node.modified ? ([[this.tt('inspect.modified'), node.modified]] as const) : []),
+		] as const) {
+			facts.createSpan({ text: label });
+			facts.createSpan({ text: value });
+		}
+		const actions = parent.createDiv({ cls: 'galaxy-panel-row' });
+		if (node.canOpen) {
+			const openBtn = actions.createEl('button', { text: this.tt('context.openNote') });
+			openBtn.addEventListener('click', this.cb.onOpenSelected);
+		}
+		const focusBtn = actions.createEl('button', { text: this.tt('common.focus') });
+		focusBtn.addEventListener('click', this.cb.onFocusSelected);
 	}
 
 	private renderViewPage(parent: HTMLElement): void {
@@ -342,6 +387,12 @@ export class ControlPanel {
 	setLanguage(language: Language): void {
 		this.language = language;
 		this.render();
+	}
+
+	setInspectNode(node: PanelInspectNode | null, activate = false): void {
+		this.inspectNode = node;
+		if (activate) this.page = 'inspect';
+		if (activate || this.page === 'inspect') this.render();
 	}
 
 	setPanelTheme(cls: VisualTokens['panelClass']): void {
