@@ -81,6 +81,8 @@ export class GraphController {
 	}
 
 	async start(): Promise<void> {
+		// Paint the view in its resolved theme before cache/index work can expose it.
+		this.applyPreset();
 		await this.store.ensureCacheReady();
 		this.store.init(this.settings.showUnresolved, this.settings.showOrphans, () => this.onDataChanged());
 		this.store.rebuild(false);
@@ -382,9 +384,11 @@ export class GraphController {
 
 	/** Theme preset + app theme → renderer tokens. */
 	applyPreset(): void {
-		if (!this.renderer) return;
 		const tokens = this.resolveVisualTokens();
-		this.renderer.applyTokens(tokens, this.settings.bloom.strength);
+		const background = typeof tokens.background === 'number' ? `#${tokens.background.toString(16).padStart(6, '0')}` : tokens.background;
+		this.contentEl.style.setProperty('--mwm-map-bg', background);
+		this.contentEl.style.backgroundColor = background;
+		this.renderer?.applyTokens(tokens, this.settings.bloom.strength);
 		this.panel?.setPanelTheme(tokens.panelClass);
 		this.contentEl.toggleClass('gx-daylight', tokens.id === 'daylight');
 	}

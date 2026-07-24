@@ -70,13 +70,20 @@ export class ControlPanel {
 	) {
 		this.root = parent.createDiv({ cls: 'galaxy-panel gx-theme-space mwm-map-panel' });
 		const header = this.root.createDiv({ cls: 'galaxy-panel-header' });
-		this.statsEl = header.createDiv({ cls: 'galaxy-panel-stats', text: '…' });
-		const collapseBtn = header.createEl('button', { cls: 'galaxy-panel-collapse', text: '-' });
+		const heading = header.createDiv({ cls: 'mwm-panel-heading' });
+		heading.createDiv({ cls: 'mwm-panel-title', text: 'Mini World Map' });
+		this.statsEl = heading.createDiv({ cls: 'galaxy-panel-stats', text: '…' });
+		const collapseBtn = header.createEl('button', {
+			cls: 'galaxy-panel-collapse',
+			text: '−',
+			attr: { type: 'button', 'aria-expanded': 'true' },
+		});
 		this.body = this.root.createDiv({ cls: 'galaxy-panel-body' });
 		collapseBtn.addEventListener('click', () => {
 			const hidden = this.body.hasClass('is-hidden');
 			this.body.toggleClass('is-hidden', !hidden);
-			collapseBtn.setText(hidden ? '-' : '+');
+			collapseBtn.setText(hidden ? '−' : '+');
+			collapseBtn.setAttr('aria-expanded', String(hidden));
 		});
 		this.render();
 	}

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.5
+
+- Refresh the map control panels with clearer headings, denser controls, and accessible collapse state.
+- Apply the resolved map theme before loading so daylight and custom backgrounds display immediately.
+- Keep visible 2D search results in place, open hidden results as roots, and clear stale selections during map navigation.
+
 ## 0.2.4
 
 - Move 3D node inspection details into the side panel.

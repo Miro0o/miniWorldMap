@@ -18,17 +18,17 @@
 /* ---------- 控制面板 ---------- */
 
 .galaxy-panel {
-	--mwm-action-button-min-height: 40px;
-	--mwm-link-row-min-height: 46px;
+	--mwm-action-button-min-height: 36px;
+	--mwm-link-row-min-height: 42px;
 	position: absolute;
-	top: 10px;
-	left: 10px;
+	top: 12px;
+	left: 12px;
 	z-index: 12;
-	width: min(360px, calc(100vw - 20px));
-	border-radius: 8px;
+	width: min(380px, calc(100vw - 24px));
+	border-radius: 12px;
 	font-size: 12px;
 	user-select: none;
-	max-height: calc(100% - 20px);
+	max-height: calc(100% - 24px);
 	overflow: hidden;
 	display: flex;
 	flex-direction: column;
@@ -109,14 +109,31 @@
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	gap: 8px;
-	padding: 8px 10px;
+	gap: 12px;
+	min-height: 42px;
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	background: color-mix(in srgb, var(--background-primary) 68%, transparent);
+}
+
+.mwm-panel-heading {
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+}
+
+.mwm-panel-title {
+	font-size: 12px;
+	font-weight: 650;
+	line-height: 1.2;
+	letter-spacing: 0.01em;
 }
 
 .galaxy-panel-stats {
 	font-family: var(--font-monospace);
-	font-size: 11px;
-	opacity: 0.75;
+	font-size: 9px;
+	line-height: 1.25;
+	color: var(--text-muted);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -124,21 +141,21 @@
 
 .galaxy-panel-collapse {
 	flex-shrink: 0;
-	width: 22px;
-	height: 22px;
+	width: 26px;
+	height: 26px;
 	padding: 0;
 	line-height: 1;
 	background: transparent;
 	border: 1px solid currentColor;
 	color: inherit;
-	opacity: 0.6;
-	border-radius: 6px;
+	opacity: 0.72;
+	border-radius: 7px;
 	cursor: pointer;
 	box-shadow: none;
 }
 
 .galaxy-panel-body {
-	padding: 0 10px 10px;
+	padding: 10px 12px 12px;
 	overflow-y: auto;
 	overflow-x: hidden;
 	min-height: 0;
@@ -165,7 +182,7 @@
 	display: flex;
 	flex-wrap: wrap;
 	gap: 6px;
-	margin-top: 10px;
+	margin-top: 0;
 	align-items: stretch;
 }
 
@@ -368,7 +385,7 @@
 	position: absolute;
 	inset: 0;
 	z-index: 20;
-	background: #000003;
+	background: var(--mwm-map-bg, #000003);
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -385,6 +402,11 @@
 	font-size: 13px;
 	letter-spacing: 0.3em;
 	animation: gx-pulse 1.6s ease-in-out infinite;
+}
+
+.gx-daylight .gx-mask-text {
+	color: #596273;
+	text-shadow: 0 1px 10px rgba(255, 255, 255, 0.72);
 }
 
 @keyframes gx-pulse {
@@ -498,7 +520,7 @@
 	padding: 0;
 	overflow: hidden;
 	position: relative;
-	background: var(--background-primary);
+	background: var(--mwm-map-bg, var(--background-primary));
 	color: var(--text-normal);
 }
 
@@ -641,15 +663,18 @@
 }
 
 .mwm-mode-switch {
-	padding: 8px;
-	margin: 4px 0 10px;
-	border: 1px solid var(--background-modifier-border);
-	border-radius: 8px;
-	background: var(--background-primary);
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	align-items: center;
+	gap: 10px;
+	padding: 0;
+	margin: 0 0 10px;
+	border: 0;
+	background: transparent;
 }
 
 .mwm-mode-switch-label {
-	margin-bottom: 6px;
+	margin: 0;
 	color: var(--text-muted);
 	font-size: 10px;
 	font-weight: 600;
@@ -660,15 +685,16 @@
 .mwm-mode-row {
 	flex-wrap: nowrap;
 	gap: 4px;
-	padding: 3px;
-	border-radius: 7px;
-	background: var(--background-secondary);
+	padding: 2px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--background-primary) 74%, transparent);
 }
 
 .mwm-mode-row button {
 	flex: 1 1 0;
 	min-width: 0;
-	min-height: 32px;
+	min-height: 30px;
 	padding: 5px 7px;
 	border: 0;
 	border-radius: 5px;
@@ -694,23 +720,25 @@
 }
 
 .mwm-panel-settings {
-	padding-top: 8px;
-	border-top: 1px solid var(--background-modifier-border);
+	padding: 8px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 10px;
+	background: color-mix(in srgb, var(--background-primary) 58%, transparent);
 }
 
 .mwm-panel-tabs {
-	gap: 4px;
+	gap: 5px;
 	display: grid;
-	grid-template-columns: repeat(auto-fit, minmax(58px, 1fr));
+	grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .mwm-panel-tabs button {
-	min-height: 28px;
+	min-height: 30px;
 	font-size: 11px;
 	line-height: 1.2;
 	padding: 4px 7px;
 	border: 1px solid var(--background-modifier-border);
-	border-radius: 6px;
+	border-radius: 7px;
 	background: transparent;
 	color: inherit;
 	cursor: pointer;
@@ -730,15 +758,19 @@
 
 .mwm-map-panel,
 .mwm-radial-panel {
-	width: min(360px, calc(100vw - 20px));
+	width: min(380px, calc(100vw - 24px));
 	color: var(--text-normal);
 }
 
 .mwm-panel-page {
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
-	padding-top: 10px;
+	gap: 10px;
+	margin-top: 8px;
+	padding: 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--background-secondary) 48%, transparent);
 }
 
 .mwm-panel-field,
@@ -746,7 +778,8 @@
 	display: grid;
 	grid-template-columns: minmax(88px, 0.42fr) minmax(0, 1fr);
 	align-items: center;
-	gap: 4px;
+	gap: 8px;
+	min-height: 30px;
 	font-size: 11px;
 }
 

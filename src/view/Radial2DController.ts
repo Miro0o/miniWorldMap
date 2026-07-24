@@ -62,8 +62,6 @@ interface PinGroup {
 	name: string;
 }
 
-const SEARCH_FOCUS_ZOOM = 0.22;
-
 export class Radial2DController extends Component {
 	private index: WorldMapIndex;
 	private state: VisibleGraphState;
@@ -459,13 +457,20 @@ export class Radial2DController extends Component {
 		this.panel = this.contentEl.createDiv({ cls: 'galaxy-panel mwm-radial-panel mwm-map-panel' });
 		this.syncThemeClass();
 		const header = this.panel.createDiv({ cls: 'galaxy-panel-header' });
-		this.statsEl = header.createDiv({ cls: 'galaxy-panel-stats', text: 'Mini World Map' });
-		const collapse = header.createEl('button', { cls: 'galaxy-panel-collapse', text: '-' });
+		const heading = header.createDiv({ cls: 'mwm-panel-heading' });
+		heading.createDiv({ cls: 'mwm-panel-title', text: 'Mini World Map' });
+		this.statsEl = heading.createDiv({ cls: 'galaxy-panel-stats', text: '…' });
+		const collapse = header.createEl('button', {
+			cls: 'galaxy-panel-collapse',
+			text: '−',
+			attr: { type: 'button', 'aria-expanded': 'true' },
+		});
 		this.panelBody = this.panel.createDiv({ cls: 'galaxy-panel-body' });
 		collapse.addEventListener('click', () => {
 			const hidden = this.panelBody?.hasClass('is-hidden') ?? false;
 			this.panelBody?.toggleClass('is-hidden', !hidden);
-			collapse.setText(hidden ? '-' : '+');
+			collapse.setText(hidden ? '−' : '+');
+			collapse.setAttr('aria-expanded', String(hidden));
 		});
 		this.renderPanel();
 	}
@@ -697,6 +702,10 @@ export class Radial2DController extends Component {
 
 	private async selectSearchNode(node: WorldNode): Promise<void> {
 		const visualId = this.index.visualNodeId(node.id) ?? node.id;
+		if (!this.graph?.nodesById.has(visualId)) {
+			await this.openSearchNodeAsRoot(visualId);
+			return;
+		}
 		this.selectedNodeId = visualId;
 		this.selectedLink = null;
 		this.hoverNodeId = null;
@@ -705,41 +714,23 @@ export class Radial2DController extends Component {
 		this.state.search = '';
 		this.state.selectedNodeId = visualId;
 		this.state.selectedLink = null;
-		if (this.state.mode === 'focus' && node.type !== 'folder') {
-			this.state.mode = 'focus';
-			this.state.rootPath = ROOT_ID;
-			this.state.focusPath = node.id;
-			await this.queueRebuild('focus');
-		} else {
-			await this.showSearchNodeInAtlas(node, visualId);
-		}
-		this.centerNode(visualId);
+		this.applyActiveState();
+		this.renderPanel();
+		this.bringSearchNodeIntoView(visualId);
 	}
 
-	private async showSearchNodeInAtlas(node: WorldNode, visualId: string): Promise<void> {
+	private async openSearchNodeAsRoot(visualId: string): Promise<void> {
+		const currentZoom = this.renderer?.getView().zoom ?? null;
+		this.leaveCompleteMap();
+		this.clearMapSelection();
 		this.state.mode = 'atlas';
 		this.state.focusPath = null;
-		if (node.type === 'folder') {
-			this.leaveCompleteMap();
-			this.state.rootPath = visualId;
-			await this.queueRebuild('root');
-			return;
-		}
-		if (this.graph?.nodesById.has(visualId)) {
-			this.applyActiveState();
-			this.renderPanel();
-			return;
-		}
-		this.leaveCompleteMap();
-		this.state.rootPath = this.searchAtlasRoot(node, visualId);
+		this.state.rootPath = visualId;
+		this.state.search = '';
+		this.needsFit = false;
 		await this.queueRebuild('root');
-	}
-
-	private searchAtlasRoot(node: WorldNode, visualId: string): string {
-		const visualNode = this.index.nodes.get(visualId);
-		if (visualNode?.type === 'folder') return visualNode.id;
-		const parentId = visualNode?.parentId ?? node.parentId;
-		return parentId && this.index.nodes.has(parentId) ? parentId : ROOT_ID;
+		const point = this.renderer?.nodePoint(visualId);
+		if (point && currentZoom !== null) this.renderer?.setView(point.x, point.y, currentZoom);
 	}
 
 	private centerCurrentView(): void {
@@ -748,6 +739,7 @@ export class Radial2DController extends Component {
 	}
 
 	private showCompleteMap(): void {
+		this.clearMapSelection();
 		this.state.showCompleteRoot = true;
 		this.applyCompleteMapState();
 		this.needsFit = true;
@@ -783,11 +775,16 @@ export class Radial2DController extends Component {
 		this.state.showLinkOverlay = radial.showLinkOverlay || !this.state.hiddenLegendItems.includes('link');
 	}
 
-	private centerNode(nodeId: string): void {
-		const point = this.renderer?.nodePoint(nodeId);
-		const view = this.renderer?.getView();
-		if (!point || !view) return;
-		this.renderer?.setView(point.x, point.y, Math.max(view.zoom, SEARCH_FOCUS_ZOOM));
+	private bringSearchNodeIntoView(nodeId: string): void {
+		const renderer = this.renderer;
+		const point = renderer?.nodePoint(nodeId);
+		const view = renderer?.getView();
+		const host = this.canvasHost;
+		if (!renderer || !point || !view || !host) return;
+		const screen = renderer.worldToScreen(point.x, point.y);
+		const visible = screen.x >= 0 && screen.y >= 0 && screen.x <= host.clientWidth && screen.y <= host.clientHeight;
+		if (visible) return;
+		renderer.setView(point.x, point.y, view.zoom);
 		this.needsFit = false;
 	}
 
@@ -1203,6 +1200,7 @@ export class Radial2DController extends Component {
 
 	private resetToAtlas(): void {
 		this.leaveCompleteMap();
+		this.clearMapSelection();
 		this.state.mode = 'atlas';
 		this.state.rootPath = this.state.rootPath || ROOT_ID;
 		this.state.focusPath = null;
@@ -1212,6 +1210,7 @@ export class Radial2DController extends Component {
 
 	private resetToRoot(): void {
 		this.leaveCompleteMap();
+		this.clearMapSelection();
 		this.state.mode = 'atlas';
 		this.state.rootPath = ROOT_ID;
 		this.state.focusPath = null;
@@ -1230,6 +1229,7 @@ export class Radial2DController extends Component {
 
 	private useAsRoot(nodeId: string): void {
 		this.leaveCompleteMap();
+		this.clearMapSelection();
 		this.state.mode = 'atlas';
 		this.state.rootPath = nodeId;
 		this.state.focusPath = null;
@@ -1245,11 +1245,22 @@ export class Radial2DController extends Component {
 
 	private focusNote(nodeId: string): void {
 		this.leaveCompleteMap();
+		this.clearMapSelection();
 		this.state.mode = 'focus';
 		this.state.focusPath = nodeId;
 		this.state.rootPath = ROOT_ID;
 		this.needsFit = true;
 		this.rebuild('focus');
+	}
+
+	private clearMapSelection(): void {
+		this.selectedNodeId = null;
+		this.selectedLink = null;
+		this.hoverNodeId = null;
+		this.hoverLink = null;
+		this.state.selectedNodeId = null;
+		this.state.selectedLink = null;
+		this.canvasHost?.removeClass('is-pointing');
 	}
 
 	private showNodeMenu(event: MouseEvent, node: WorldNode): void {
