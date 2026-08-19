@@ -276,7 +276,7 @@ export class GraphController {
 		this.renderer?.applyTier(this.tier, this.settings.bloom.strength);
 		this.overlay?.setBudgets(this.tier.hubLabels, this.tier.neighborLabels);
 		this.contentEl.toggleClass('gx-mobile', this.tier.id === 'mobile');
-		const total = this.app.vault.getMarkdownFiles().length;
+		const total = this.store.totalMarkdownFiles;
 		this.store.setCaps(this.tier.nodeCap, this.tier.linkCap); // 变化时触发重建
 		if (this.tier.nodeCap !== null && total > this.tier.nodeCap && prev !== this.tier.id) {
 			new Notice(this.tt('3d.mobileCap', { cap: this.tier.nodeCap, total }));

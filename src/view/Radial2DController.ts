@@ -124,7 +124,6 @@ export class Radial2DController extends Component {
 	}
 
 	async start(): Promise<void> {
-		console.info('[Mini World Map] starting 2D map');
 		this.contentEl.addClass('mwm-radial-mode');
 		this.canvasHost = this.contentEl.createDiv({ cls: 'mwm-radial-host' });
 		this.renderer = new RadialRenderer(this.canvasHost);

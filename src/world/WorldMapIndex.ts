@@ -2,7 +2,7 @@ import type { App } from 'obsidian';
 import { TFile, TFolder } from 'obsidian';
 import type { RadialSettings } from '../settings';
 import { buildWorldMap, normalizeVaultPath } from './buildWorldMap';
-import type { LinkTable, VisibleGraphState, VisibleWorldGraph, WorldEdge, WorldFileRecord, WorldModel, WorldNode } from './types';
+import type { VisibleGraphState, VisibleWorldGraph, WorldEdge, WorldFileRecord, WorldModel, WorldNode } from './types';
 import { ROOT_ID } from './types';
 import { buildVisibleWorldGraph, visualNodeId } from './visibleGraph';
 
@@ -47,8 +47,8 @@ export class WorldMapIndex {
 		this.settings = settings;
 		this.model = buildWorldMap(
 			this.collectVaultEntries(),
-			this.app.metadataCache.resolvedLinks as LinkTable,
-			this.app.metadataCache.unresolvedLinks as LinkTable,
+			this.app.metadataCache.resolvedLinks,
+			this.app.metadataCache.unresolvedLinks,
 			settings,
 			this.app.vault.getName(),
 		);
@@ -71,8 +71,7 @@ export class WorldMapIndex {
 
 	private collectVaultEntries(): WorldFileRecord[] {
 		const entries: WorldFileRecord[] = [];
-		const root = typeof this.app.vault.getRoot === 'function' ? this.app.vault.getRoot() : null;
-		const stack = root && Array.isArray(root.children) ? [...root.children] : [];
+		const stack = [...this.app.vault.getRoot().children];
 		while (stack.length > 0) {
 			const entry = stack.pop();
 			if (entry instanceof TFolder) {
@@ -86,11 +85,6 @@ export class WorldMapIndex {
 				}
 			} else if (entry instanceof TFile && entry.extension === 'md') {
 				entries.push({ path: entry.path, basename: entry.basename, kind: 'note', size: entry.stat.size });
-			}
-		}
-		if (entries.length === 0) {
-			for (const file of this.app.vault.getMarkdownFiles()) {
-				entries.push({ path: file.path, basename: file.basename, kind: 'note', size: file.stat.size });
 			}
 		}
 		if (!entries.some((entry) => entry.path === ROOT_ID)) return entries;

@@ -130,6 +130,8 @@ Then reload Obsidian and enable the plugin.
 
 Mini World Map runs locally in Obsidian. It does not use network services or telemetry.
 
+To build complete 2D and 3D maps, the plugin enumerates the vault's folder structure and Markdown files. It uses file paths, names, sizes, and Obsidian's cached link metadata; it does not read note contents. The optional graph-color import reads only the vault's `.obsidian/graph.json` configuration. This data stays inside Obsidian and is never sent over the network.
+
 ## Credits
 
 - Based on [Longwind1984/galaxy-view](https://github.com/Longwind1984/galaxy-view).

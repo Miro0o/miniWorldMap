@@ -11,6 +11,7 @@ import { seedPosition, seedRadius } from './seed';
  */
 export class GraphStore extends Component {
 	data: GraphData = { nodes: [], links: [] };
+	totalMarkdownFiles = 0;
 	/** x,y,z × nodes.length，布局引擎原地写，渲染器只读 */
 	positions = new Float32Array(0);
 
@@ -73,6 +74,7 @@ export class GraphStore extends Component {
 			basename: f.basename,
 			size: f.stat.size,
 		}));
+		this.totalMarkdownFiles = files.length;
 		const next = buildGraph(files, this.app.metadataCache.resolvedLinks, this.app.metadataCache.unresolvedLinks, {
 			includeUnresolved: this.includeUnresolved,
 			includeOrphans: this.includeOrphans,

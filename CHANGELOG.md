@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.7
+
+- Address Obsidian review warnings for console logging, DOM element creation, redundant type assertions, and CSS overrides.
+- Reduce duplicate vault enumeration and document the local-only metadata used to build maps.
+
 ## 0.2.6
 
 - Add semantic 2D node shapes, clearer route colors, faster label updates, and an All links hover mode.

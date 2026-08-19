@@ -34,11 +34,10 @@ function sampleObsidianBackground(scheme: ObsidianThemeScheme): string | null {
 function normalizeCssColor(value: string): string | null {
 	const doc = activeDocument;
 	const body = doc.body;
-	const probe = doc.createElement('span');
-	probe.setCssStyles({ color: value, display: 'none' });
-	if (!probe.style.color) return null;
-	body.appendChild(probe);
+	const probe = body.createSpan();
 	try {
+		probe.setCssStyles({ color: value, display: 'none' });
+		if (!probe.style.color) return null;
 		const computed = doc.defaultView?.getComputedStyle(probe).color ?? getComputedStyle(probe).color;
 		return rgbStringToHex(computed);
 	} finally {
