@@ -41,6 +41,14 @@ import { ROOT_ID, type VisibleGraphState, type VisibleWorldGraph, type WorldEdge
 import { WorldMapIndex } from '../world/WorldMapIndex';
 import { defaultVisibleGraphState } from '../world/visibleGraph';
 import { NodeSearchModal } from './SearchModal';
+import {
+	addPinGroupMembership,
+	canStartPinGrouping,
+	findPinnedRoute,
+	isPinnedRouteVisible,
+	pinRouteKey,
+	removePinGroupMembership,
+} from './pinRoutes';
 
 interface PinPath {
 	id: string;
@@ -54,12 +62,13 @@ interface PinPath {
 	mode: string;
 	title: string;
 	path: string;
-	groupId: string | null;
+	groupIds: string[];
 }
 
 interface PinGroup {
 	id: string;
 	name: string;
+	visible: boolean;
 }
 
 export class Radial2DController extends Component {
@@ -83,6 +92,7 @@ export class Radial2DController extends Component {
 	private nextPinId = 1;
 	private nextPinGroupId = 1;
 	private pinGroupName = '';
+	private pinGroupingMode = false;
 	private disposed = false;
 	private startupSettled = false;
 	private rebuildToken = 0;
@@ -439,11 +449,11 @@ export class Radial2DController extends Component {
 		addNode(activeNode, this.state.hoverHighlightMode, false);
 		addLink(activeLink, false);
 		for (const pin of this.pinnedPaths) {
-			if (!pin.active) continue;
+			if (!isPinnedRouteVisible(pin, this.pinGroups)) continue;
 			if (pin.kind === 'node') addNode(pin.nodeId, pin.mode, true);
 			else addLink(this.findGraphEdgeForPin(pin), true);
 		}
-		state.hasActive = Boolean(activeNode || activeLink || this.pinnedPaths.some((pin) => pin.active));
+		state.hasActive = Boolean(activeNode || activeLink || this.pinnedPaths.some((pin) => isPinnedRouteVisible(pin, this.pinGroups)));
 		state.dimOthers = Boolean(activeNode || activeLink);
 		return state;
 	}
@@ -497,7 +507,11 @@ export class Radial2DController extends Component {
 			['controls', this.t('tab.controls')],
 			['defaults', this.t('tab.defaults')],
 		] as const) {
-			const button = tabs.createEl('button', { cls: this.activePanelPage === id ? 'is-active' : '', text: label, attr: { title: label } });
+			const button = tabs.createEl('button', {
+				cls: this.activePanelPage === id ? 'is-active' : '',
+				text: label,
+				attr: { title: this.t(`tab.${id}.desc`) },
+			});
 			button.addEventListener('click', () => {
 				this.activePanelPage = id;
 				this.renderPanel();
@@ -529,7 +543,7 @@ export class Radial2DController extends Component {
 		parent.createDiv({ cls: 'mwm-side-path', text: node.path || '/' });
 		const facts = parent.createDiv({ cls: 'mwm-facts' });
 		for (const [label, value] of [
-			[this.t('inspect.type'), node.externalProxy ? `${this.t('inspect.external')} ${node.type}` : node.type],
+			[this.t('inspect.type'), this.searchKindLabel(node)],
 			[this.t('inspect.depth'), String(node.depth)],
 			[this.t('inspect.notes'), String(node.noteCount || node.descendantCount || 0)],
 			[this.t('inspect.out'), String(node.linkCount || 0)],
@@ -540,9 +554,9 @@ export class Radial2DController extends Component {
 		}
 		const actions = parent.createDiv({ cls: 'galaxy-panel-row' });
 		this.button(actions, this.t('common.pin'), () => this.pinNode(node));
-		if (node.type === 'note') this.button(actions, this.t('common.open'), () => void this.openNode(node.id));
-		if (node.type === 'note') this.button(actions, this.t('common.focus'), () => this.focusNote(node.id));
-		if (node.type === 'folder') this.button(actions, this.t('common.root'), () => this.useAsRoot(node.id));
+		if (node.type === 'note') this.button(actions, this.t('context.openNote'), () => void this.openNode(node.id));
+		if (node.type === 'note') this.button(actions, this.t('context.focusNote'), () => this.focusNote(node.id));
+		if (node.type === 'folder') this.button(actions, this.t('context.useAsRoot'), () => this.useAsRoot(node.id));
 		const rootParentId = this.currentRootParentId();
 		if (rootParentId !== null) this.button(actions, this.t('inspect.parentRoot'), () => this.useAsRoot(rootParentId));
 		this.renderNeighborList(parent, node);
@@ -593,28 +607,42 @@ export class Radial2DController extends Component {
 	}
 
 	private renderPinsPage(parent: HTMLElement): void {
-		const actions = parent.createDiv({ cls: 'galaxy-panel-row' });
-		this.button(actions, this.t('common.pinCurrent'), () => this.pinCurrent());
-		this.button(actions, this.t('common.clear'), () => this.clearPins());
-		const groupRow = parent.createDiv({ cls: 'mwm-pin-group-row' });
-		const input = groupRow.createEl('input', { attr: { value: this.pinGroupName, placeholder: this.t('pins.groupName') } });
-		input.addEventListener('input', () => (this.pinGroupName = input.value));
-		this.button(groupRow, this.t('common.group'), () => this.groupSelectedPins());
+		if (this.pinGroupingMode && !canStartPinGrouping(this.pinnedPaths.length)) {
+			this.pinGroupingMode = false;
+			this.selectedPinIds.clear();
+			this.pinGroupName = '';
+		}
+		if (this.pinGroupingMode) {
+			this.renderPinGroupingEditor(parent);
+		} else {
+			const actions = parent.createDiv({ cls: 'galaxy-panel-row' });
+			this.button(actions, this.t('common.pinCurrent'), () => this.pinCurrent(), false, this.t('pins.pinCurrentDesc'));
+			if (canStartPinGrouping(this.pinnedPaths.length)) {
+				this.button(actions, this.t('pins.groupRoutes'), () => this.startPinGrouping(), false, this.t('pins.groupRoutesDesc'));
+			}
+			if (this.pinnedPaths.length > 0) {
+				this.button(actions, this.t('pins.clearAll'), () => this.clearPins(), false, this.t('pins.clearAllDesc')).addClass('is-danger');
+			}
+		}
 		if (this.pinnedPaths.length === 0) {
 			parent.createDiv({ cls: 'mwm-side-muted', text: this.t('pins.empty') });
+			return;
+		}
+		if (this.pinGroupingMode) {
+			this.renderPinSelectionList(parent);
 			return;
 		}
 		const groupsById = new Map(this.pinGroups.map((group) => [group.id, group]));
 		const pinsByGroup = new Map<string, PinPath[]>();
 		const ungrouped: PinPath[] = [];
 		for (const pin of this.pinnedPaths) {
-			if (!pin.groupId || !groupsById.has(pin.groupId)) {
-				ungrouped.push(pin);
-				continue;
+			const validGroupIds = pin.groupIds.filter((groupId) => groupsById.has(groupId));
+			if (validGroupIds.length === 0) ungrouped.push(pin);
+			for (const groupId of validGroupIds) {
+				const list = pinsByGroup.get(groupId) ?? [];
+				list.push(pin);
+				pinsByGroup.set(groupId, list);
 			}
-			const list = pinsByGroup.get(pin.groupId) ?? [];
-			list.push(pin);
-			pinsByGroup.set(pin.groupId, list);
 		}
 		if (ungrouped.length) this.renderPinGroup(parent, null, ungrouped);
 		for (const group of this.pinGroups) {
@@ -623,56 +651,100 @@ export class Radial2DController extends Component {
 		}
 	}
 
-	private renderPinGroup(parent: HTMLElement, group: PinGroup | null, pins: PinPath[]): void {
+	private renderPinSelectionList(parent: HTMLElement): void {
 		const wrapper = parent.createDiv({ cls: 'mwm-pin-group' });
+		const header = wrapper.createDiv({ cls: 'mwm-pin-group-header' });
+		header.createSpan({ cls: 'mwm-pin-group-title', text: this.t('pins.allRoutes') });
+		header.createSpan({ cls: 'mwm-pin-count', text: String(this.pinnedPaths.length) });
+		for (const pin of this.pinnedPaths) this.renderPinRow(wrapper, pin, null);
+	}
+
+	private renderPinGroupingEditor(parent: HTMLElement): void {
+		const selectedCount = this.selectedPinIds.size;
+		const editor = parent.createDiv({ cls: 'mwm-pin-group-editor' });
+		const header = editor.createDiv({ cls: 'mwm-pin-group-editor-header' });
+		header.createSpan({ cls: 'mwm-pin-group-editor-title', text: this.t('pins.groupRoutes') });
+		header.createSpan({ cls: 'mwm-pin-count', text: this.t('pins.selectedCount', { count: selectedCount }) });
+		editor.createDiv({ cls: 'mwm-pin-group-instructions', text: this.t('pins.groupInstructions') });
+		const groupRow = editor.createDiv({ cls: 'mwm-pin-group-row' });
+		const input = groupRow.createEl('input', {
+			attr: { value: this.pinGroupName, placeholder: this.t('pins.groupName'), 'aria-label': this.t('pins.groupName') },
+		});
+		input.addEventListener('input', () => (this.pinGroupName = input.value));
+		const actions = editor.createDiv({ cls: 'galaxy-panel-row mwm-pin-group-editor-actions' });
+		const create = this.button(actions, this.t('pins.createGroup'), () => this.groupSelectedPins());
+		create.disabled = selectedCount < 2;
+		this.button(actions, this.t('pins.cancelGrouping'), () => this.cancelPinGrouping());
+	}
+
+	private renderPinGroup(parent: HTMLElement, group: PinGroup | null, pins: PinPath[]): void {
+		const wrapper = parent.createDiv({ cls: group && !group.visible ? 'mwm-pin-group is-muted' : 'mwm-pin-group' });
 		const header = wrapper.createDiv({ cls: 'mwm-pin-group-header' });
 		header.createSpan({ cls: 'mwm-pin-group-title', text: group?.name ?? this.t('pins.ungrouped') });
 		header.createSpan({ cls: 'mwm-pin-count', text: String(pins.length) });
-		if (group) this.button(header, this.t('common.ungroup'), () => this.removePinGroup(group.id));
-		for (const pin of pins) this.renderPinRow(wrapper, pin);
+		if (group && !this.pinGroupingMode) {
+			this.button(
+				header,
+				group.visible ? this.t('pins.hideGroup') : this.t('pins.showGroup'),
+				() => this.togglePinGroupVisibility(group.id),
+				false,
+				group.visible ? this.t('pins.hideGroupDesc') : this.t('pins.showGroupDesc'),
+			);
+			this.button(header, this.t('pins.dissolveGroup'), () => this.removePinGroup(group.id), false, this.t('pins.dissolveGroupDesc'));
+		}
+		for (const pin of pins) this.renderPinRow(wrapper, pin, group?.id ?? null);
 	}
 
-	private renderPinRow(parent: HTMLElement, pin: PinPath): void {
-		const row = parent.createDiv({ cls: pin.active ? 'mwm-pin-row' : 'mwm-pin-row is-muted' });
-		const check = row.createEl('input', {
-			cls: 'mwm-pin-check',
-			attr: { type: 'checkbox', title: this.t('pins.selectForGroup'), 'aria-label': this.t('pins.selectForGroup') },
-		});
-		check.checked = this.selectedPinIds.has(pin.id);
-		check.addEventListener('change', () => {
-			if (check.checked) this.selectedPinIds.add(pin.id);
-			else this.selectedPinIds.delete(pin.id);
-			this.renderPanel();
-		});
+	private renderPinRow(parent: HTMLElement, pin: PinPath, renderedGroupId: string | null): void {
+		const selected = this.selectedPinIds.has(pin.id);
+		const classes = ['mwm-pin-row'];
+		if (!pin.active) classes.push('is-muted');
+		if (this.pinGroupingMode) classes.push('is-selecting');
+		if (selected) classes.push('is-selected');
+		const row = parent.createDiv({ cls: classes.join(' ') });
+		if (this.pinGroupingMode) {
+			const check = row.createEl('input', {
+				cls: 'mwm-pin-check',
+				attr: { type: 'checkbox', title: this.t('pins.selectForGroup'), 'aria-label': this.t('pins.selectForGroup') },
+			});
+			check.checked = selected;
+			check.addEventListener('change', () => this.setPinGroupSelection(pin.id, check.checked));
+		}
 		const main = row.createEl('button', { cls: 'mwm-pin-main', attr: { type: 'button' } });
-		main.addEventListener('click', () => this.locatePin(pin));
+		main.addEventListener('click', () => {
+			if (this.pinGroupingMode) this.setPinGroupSelection(pin.id, !this.selectedPinIds.has(pin.id));
+			else this.locatePin(pin);
+		});
 		const displayTitle = this.pinDisplayTitle(pin);
 		const displayPath = pin.path || '/';
-		main.setAttr('title', `${displayTitle}\n${this.pinKindLabel(pin)} - ${displayPath}`);
+		main.setAttr('title', this.pinGroupingMode ? this.t('pins.selectForGroup') : `${displayTitle}\n${this.pinKindLabel(pin)} - ${displayPath}`);
 		main.createDiv({ cls: 'mwm-pin-title', text: displayTitle });
 		main.createDiv({ cls: 'mwm-pin-meta', text: displayPath });
+		if (this.pinGroupingMode) return;
 		const actions = row.createDiv({ cls: 'mwm-pin-actions' });
 		this.button(actions, pin.active ? this.t('pins.hideHighlight') : this.t('pins.showHighlight'), () => this.togglePinHighlight(pin.id));
-		this.button(actions, this.t('common.inspect'), () => this.inspectPin(pin));
-		if (pin.groupId) this.button(actions, this.t('common.ungroup'), () => this.ungroupPin(pin.id));
-		this.button(actions, 'X', () => this.removePin(pin.id));
+		this.button(actions, this.t('tab.inspect'), () => this.inspectPin(pin));
+		if (renderedGroupId) {
+			this.button(actions, this.t('pins.removeFromGroup'), () => this.ungroupPin(pin.id, renderedGroupId), false, this.t('pins.removeFromGroupDesc'));
+		}
+		this.button(actions, this.t('pins.remove'), () => this.removePin(pin.id), false, this.t('pins.removeDesc')).addClass('is-danger');
 	}
 
 	private renderViewPage(parent: HTMLElement): void {
 		const row = parent.createDiv({ cls: 'galaxy-panel-row' });
-		this.button(row, this.t('common.search'), () => this.openSearch());
-		this.button(row, this.t('common.recenter'), () => this.centerCurrentView());
-		this.button(row, this.t('common.rebuild'), () => this.rebuild('manual'));
+		this.button(row, this.t('common.search'), () => this.openSearch(), false, this.t('view.search.desc'));
+		this.button(row, this.t('common.recenter'), () => this.centerCurrentView(), false, this.t('view.fit.desc'));
+		this.button(row, this.t('common.rebuild'), () => this.rebuild('manual'), false, this.t('view.refresh.desc'));
 		const row2 = parent.createDiv({ cls: 'galaxy-panel-row' });
-		this.button(row2, this.t('view.atlas'), () => this.resetToAtlas(), this.state.mode === 'atlas' && !this.state.showCompleteRoot);
-		this.button(row2, this.t('view.focus'), () => this.focusActiveNote(), this.state.mode === 'focus');
-		this.button(row2, this.t('view.vaultRoot'), () => this.resetToRoot());
-		this.button(row2, this.t('view.completeMap'), () => this.showCompleteMap(), this.state.showCompleteRoot);
+		this.button(row2, this.t('view.atlas'), () => this.resetToAtlas(), this.state.mode === 'atlas' && !this.state.showCompleteRoot, this.t('view.atlas.desc'));
+		this.button(row2, this.t('view.focus'), () => this.focusActiveNote(), this.state.mode === 'focus', this.t('view.focus.desc'));
+		this.button(row2, this.t('view.vaultRoot'), () => this.resetToRoot(), false, this.t('view.vaultRoot.desc'));
+		this.button(row2, this.t('view.completeMap'), () => this.showCompleteMap(), this.state.showCompleteRoot, this.t('view.completeMap.desc'));
 		this.select(parent, this.t('view.theme'), this.radial().colorScheme, colorSchemeOptions(this.settings.language), (value) => {
 			this.radial().colorScheme = normalizeColorScheme(value);
 			this.saveSoon();
 			this.syncThemeClass();
-		});
+		}, this.t('view.theme.desc'));
 	}
 
 	openSearch(): void {
@@ -739,8 +811,11 @@ export class Radial2DController extends Component {
 	}
 
 	private showCompleteMap(): void {
+		const currentRoot = this.graph?.rootId ?? this.state.rootPath ?? ROOT_ID;
 		this.clearMapSelection();
 		this.state.showCompleteRoot = true;
+		this.state.mode = 'atlas';
+		this.state.rootPath = currentRoot;
 		this.applyCompleteMapState();
 		this.needsFit = true;
 		this.rebuild('complete');
@@ -748,7 +823,6 @@ export class Radial2DController extends Component {
 
 	private applyCompleteMapState(): void {
 		this.state.mode = 'atlas';
-		this.state.rootPath = ROOT_ID;
 		this.state.focusPath = null;
 		this.state.search = '';
 		this.state.atlasDepth = MAX_ATLAS_DEPTH;
@@ -801,17 +875,17 @@ export class Radial2DController extends Component {
 			this.leaveCompleteMap();
 			this.state.atlasDepth = value;
 			this.rebuild('depth');
-		});
+		}, this.t('settings.depthDesc'));
 		this.numberInput(parent, this.t('control.nodes'), this.state.nodeLimit, 200, MAX_RENDER_NODE_LIMIT, 100, (value) => {
 			this.leaveCompleteMap();
 			this.state.nodeLimit = value;
 			this.rebuild('nodes');
-		});
+		}, this.t('settings.nodeLimitDesc'));
 		this.numberInput(parent, this.t('control.noteLinks'), this.state.linkLimit, 0, MAX_LINK_LIMIT, 50, (value) => {
 			this.leaveCompleteMap();
 			this.state.linkLimit = value;
 			this.rebuild('links');
-		});
+		}, this.t('settings.linkLimitDesc'));
 		const hidden = new Set(this.state.hiddenLegendItems);
 		const noteLinksVisible = this.state.showLinkOverlay && !hidden.has('link');
 		this.toggle(parent, this.t('control.showNoteLinks'), noteLinksVisible, (value) => {
@@ -821,7 +895,7 @@ export class Radial2DController extends Component {
 			this.setLegendHidden('link', !value);
 			this.saveSoon();
 			this.rebuild('link-overlay');
-		});
+		}, this.t('settings.showLinksDesc'));
 		this.select(parent, this.t('control.hover'), this.state.hoverHighlightMode, hoverModeOptions(this.settings.language, HOVER_HIGHLIGHT_MODE_OPTIONS), (value) => {
 			const mode = normalizeHoverHighlightMode(value);
 			this.state.hoverHighlightMode = mode;
@@ -829,25 +903,25 @@ export class Radial2DController extends Component {
 			this.state.pinNeedsHoverLinks = this.pinnedPathsNeedHoverLinks();
 			this.saveSoon();
 			this.rebuild('hover');
-		});
+		}, this.t('settings.hoverDesc'));
 		this.select(parent, this.t('control.hoverTargets'), radial.hoverTargetMode, hoverTargetOptions(this.settings.language, HOVER_TARGET_MODE_OPTIONS), (value) => {
 			radial.hoverTargetMode = normalizeHoverTargetMode(value);
 			this.clearDisallowedHoverTargets();
 			this.saveSoon();
 			this.applyActiveState();
 			this.renderPanel();
-		});
+		}, this.t('settings.hoverTargetsDesc'));
 		this.select(parent, this.t('control.labels'), radial.labelVisibility, labelVisibilityOptions(this.settings.language, LABEL_VISIBILITY_OPTIONS), (value) => {
 			radial.labelVisibility = normalizeLabelVisibility(value);
 			this.state.labelVisibility = radial.labelVisibility;
 			this.saveSoon();
 			this.applyActiveState();
-		});
+		}, this.t('settings.labelsDesc'));
 		this.numberInput(parent, this.t('control.spin'), radial.swirlStrength, 0, MAX_SWIRL_STRENGTH, 1, (value) => {
 			radial.swirlStrength = value;
 			this.saveSoon();
 			this.rebuild('spin');
-		});
+		}, this.t('settings.spinDesc'));
 		this.toggle(parent, this.t('control.ringGuides'), radial.showRingGuides, (value) => {
 			radial.showRingGuides = value;
 			this.saveSoon();
@@ -856,14 +930,14 @@ export class Radial2DController extends Component {
 				this.applyActiveState();
 			}
 			this.renderPanel();
-		});
+		}, this.t('settings.ringGuidesDesc'));
 		this.toggle(parent, this.t('control.outsideLinks'), this.state.showExternalLinks, (value) => {
 			this.leaveCompleteMap();
 			this.state.showExternalLinks = value;
 			radial.showExternalLinks = value;
 			this.saveSoon();
 			this.rebuild('external');
-		});
+		}, this.t('settings.outsideLinksDesc'));
 		this.select(
 			parent,
 			this.t('control.outsideDetail'),
@@ -876,6 +950,7 @@ export class Radial2DController extends Component {
 				this.saveSoon();
 				this.rebuild('external-mode');
 			},
+			this.t('settings.outsideDetailDesc'),
 		);
 		this.numberInput(parent, this.t('control.exactOutsideFiles'), this.state.externalLinkAnchorLimit, 0, MAX_EXTERNAL_LINK_ANCHOR_LIMIT, 50, (value) => {
 			this.leaveCompleteMap();
@@ -883,7 +958,7 @@ export class Radial2DController extends Component {
 			radial.externalLinkAnchorLimit = value;
 			this.saveSoon();
 			this.rebuild('external-limit');
-		});
+		}, this.t('settings.outsideLimitDesc'));
 		this.renderLegend(parent);
 	}
 
@@ -893,22 +968,22 @@ export class Radial2DController extends Component {
 			radial.atlasDepth = value;
 			this.state.atlasDepth = value;
 			this.saveSoon();
-		});
+		}, this.t('settings.depthDesc'));
 		this.numberInput(parent, this.t('control.defaultNodes'), radial.renderNodeLimit, 200, MAX_RENDER_NODE_LIMIT, 100, (value) => {
 			radial.renderNodeLimit = value;
 			this.state.nodeLimit = value;
 			this.saveSoon();
-		});
+		}, this.t('settings.nodeLimitDesc'));
 		this.numberInput(parent, this.t('control.defaultNoteLinks'), radial.linkLimit, 0, MAX_LINK_LIMIT, 50, (value) => {
 			radial.linkLimit = value;
 			this.state.linkLimit = value;
 			this.saveSoon();
-		});
+		}, this.t('settings.linkLimitDesc'));
 		this.toggle(parent, this.t('control.unresolvedLinks'), radial.includeUnresolvedLinks, (value) => {
 			radial.includeUnresolvedLinks = value;
 			this.saveSoon();
 			this.rebuild('unresolved');
-		});
+		}, this.t('settings.unresolvedDesc'));
 		this.textArea(parent, this.t('control.ignoredFolders'), radial.ignoreFolders.join('\n'), (value) => {
 			radial.ignoreFolders = value
 				.split('\n')
@@ -916,11 +991,11 @@ export class Radial2DController extends Component {
 				.filter(Boolean);
 			this.saveSoon();
 			this.rebuild('ignored');
-		});
+		}, this.t('settings.ignoredDesc'));
 	}
 
 	private renderLegend(parent: HTMLElement): void {
-		parent.createDiv({ cls: 'mwm-side-heading', text: this.t('control.legend') });
+		parent.createDiv({ cls: 'mwm-side-heading', text: this.t('control.legend'), attr: { title: this.t('settings.legendDesc') } });
 		const hidden = new Set(this.state.hiddenLegendItems);
 		for (const [id, labelKey, titleKey, markerClass] of LEGEND_ITEM_DEFINITIONS) {
 			const row = parent.createEl('label', {
@@ -993,22 +1068,22 @@ export class Radial2DController extends Component {
 		menu.showAtPosition({ x: rect.right, y: rect.bottom });
 	}
 
-	private button(parent: HTMLElement, label: string, onClick: () => void, active = false): HTMLButtonElement {
-		const button = parent.createEl('button', { cls: active ? 'is-active' : '', attr: { title: label } });
+	private button(parent: HTMLElement, label: string, onClick: () => void, active = false, title = label): HTMLButtonElement {
+		const button = parent.createEl('button', { cls: active ? 'is-active' : '', attr: { title } });
 		button.createSpan({ cls: 'mwm-button-label', text: label });
 		button.addEventListener('click', onClick);
 		return button;
 	}
 
-	private numberInput(parent: HTMLElement, label: string, value: number, min: number, max: number, step: number, onChange: (value: number) => void): void {
-		const field = parent.createEl('label', { cls: 'mwm-panel-field' });
+	private numberInput(parent: HTMLElement, label: string, value: number, min: number, max: number, step: number, onChange: (value: number) => void, title = label): void {
+		const field = parent.createEl('label', { cls: 'mwm-panel-field', attr: { title } });
 		field.createSpan({ text: label });
 		const input = field.createEl('input', { attr: { value: String(value), type: 'number', min: String(min), max: String(max), step: String(step) } });
 		input.addEventListener('change', () => onChange(clampNumber(input.value, min, max, value)));
 	}
 
-	private textArea(parent: HTMLElement, label: string, value: string, onChange: (value: string) => void): void {
-		const field = parent.createEl('label', { cls: 'mwm-panel-field mwm-panel-field-stack' });
+	private textArea(parent: HTMLElement, label: string, value: string, onChange: (value: string) => void, title = label): void {
+		const field = parent.createEl('label', { cls: 'mwm-panel-field mwm-panel-field-stack', attr: { title } });
 		field.createSpan({ text: label });
 		const input = field.createEl('textarea');
 		input.value = value;
@@ -1023,8 +1098,8 @@ export class Radial2DController extends Component {
 		input.addEventListener('change', () => onChange(input.checked));
 	}
 
-	private select<T extends string>(parent: HTMLElement, label: string, value: T, options: [T, string][], onChange: (value: T) => void): void {
-		const field = parent.createEl('label', { cls: 'mwm-panel-field' });
+	private select<T extends string>(parent: HTMLElement, label: string, value: T, options: [T, string][], onChange: (value: T) => void, title = label): void {
+		const field = parent.createEl('label', { cls: 'mwm-panel-field', attr: { title } });
 		field.createSpan({ text: label });
 		const select = field.createEl('select');
 		for (const [id, text] of options) select.createEl('option', { attr: { value: id }, text });
@@ -1064,11 +1139,20 @@ export class Radial2DController extends Component {
 		});
 	}
 
-	private addPin(candidate: Omit<PinPath, 'id' | 'key' | 'active' | 'groupId'>): void {
-		const key = candidate.kind === 'node' ? `node:${candidate.nodeId}:${candidate.mode}` : `link:${candidate.edgeId ?? `${candidate.source}->${candidate.target}`}`;
-		const pin: PinPath = { ...candidate, id: `pin-${this.nextPinId++}`, key, active: true, groupId: null };
+	private addPin(candidate: Omit<PinPath, 'id' | 'key' | 'active' | 'groupIds'>): void {
+		const key = pinRouteKey(candidate);
+		const existing = findPinnedRoute(this.pinnedPaths, candidate);
+		if (existing) {
+			existing.active = true;
+			this.state.pinNeedsHoverLinks = this.pinnedPathsNeedHoverLinks();
+			this.applyActiveState();
+			this.activePanelPage = 'pins';
+			this.renderPanel();
+			new Notice(this.t('pins.already'));
+			return;
+		}
+		const pin: PinPath = { ...candidate, id: `pin-${this.nextPinId++}`, key, active: true, groupIds: [] };
 		this.pinnedPaths.push(pin);
-		this.selectedPinIds.add(pin.id);
 		this.state.pinNeedsHoverLinks = this.pinnedPathsNeedHoverLinks();
 		this.applyActiveState();
 		this.activePanelPage = 'pins';
@@ -1088,6 +1172,8 @@ export class Radial2DController extends Component {
 		this.pinnedPaths = [];
 		this.pinGroups = [];
 		this.selectedPinIds.clear();
+		this.pinGroupingMode = false;
+		this.pinGroupName = '';
 		this.state.pinNeedsHoverLinks = false;
 		this.applyActiveState();
 		this.renderPanel();
@@ -1095,37 +1181,62 @@ export class Radial2DController extends Component {
 
 	private groupSelectedPins(): void {
 		const pins = this.pinnedPaths.filter((pin) => this.selectedPinIds.has(pin.id));
-		if (pins.length === 0) {
+		if (pins.length < 2) {
 			new Notice(this.t('pins.selectFirst'));
 			return;
 		}
 		const groupId = `pin-group-${this.nextPinGroupId++}`;
-		this.pinGroups.push({ id: groupId, name: this.pinGroupName.trim() || `Group ${this.pinGroups.length + 1}` });
-		for (const pin of pins) pin.groupId = groupId;
+		this.pinGroups.push({ id: groupId, name: this.pinGroupName.trim() || `Group ${this.pinGroups.length + 1}`, visible: true });
+		for (const pin of pins) pin.groupIds = addPinGroupMembership(pin.groupIds, groupId);
 		this.dropEmptyPinGroups();
 		this.pinGroupName = '';
 		this.selectedPinIds.clear();
+		this.pinGroupingMode = false;
+		this.refreshPinnedRouteVisibility();
+		this.renderPanel();
+	}
+
+	private startPinGrouping(): void {
+		if (!canStartPinGrouping(this.pinnedPaths.length)) return;
+		this.pinGroupingMode = true;
+		this.pinGroupName = '';
+		this.selectedPinIds.clear();
+		this.renderPanel();
+	}
+
+	private cancelPinGrouping(): void {
+		this.pinGroupingMode = false;
+		this.pinGroupName = '';
+		this.selectedPinIds.clear();
+		this.renderPanel();
+	}
+
+	private setPinGroupSelection(pinId: string, selected: boolean): void {
+		if (selected) this.selectedPinIds.add(pinId);
+		else this.selectedPinIds.delete(pinId);
 		this.renderPanel();
 	}
 
 	private removePinGroup(groupId: string): void {
 		this.pinGroups = this.pinGroups.filter((group) => group.id !== groupId);
 		for (const pin of this.pinnedPaths) {
-			if (pin.groupId === groupId) pin.groupId = null;
+			pin.groupIds = removePinGroupMembership(pin.groupIds, groupId);
 		}
+		this.refreshPinnedRouteVisibility();
 		this.renderPanel();
 	}
 
-	private ungroupPin(pinId: string): void {
+	private ungroupPin(pinId: string, groupId: string): void {
 		const pin = this.pinnedPaths.find((item) => item.id === pinId);
 		if (!pin) return;
-		pin.groupId = null;
+		pin.groupIds = removePinGroupMembership(pin.groupIds, groupId);
 		this.dropEmptyPinGroups();
+		this.refreshPinnedRouteVisibility();
 		this.renderPanel();
 	}
 
 	private dropEmptyPinGroups(): void {
-		const usedGroups = new Set(this.pinnedPaths.map((pin) => pin.groupId).filter((id): id is string => Boolean(id)));
+		const usedGroups = new Set(this.pinnedPaths.flatMap((pin) => pin.groupIds));
 		this.pinGroups = this.pinGroups.filter((group) => usedGroups.has(group.id));
 	}
 
@@ -1136,6 +1247,19 @@ export class Radial2DController extends Component {
 		this.state.pinNeedsHoverLinks = this.pinnedPathsNeedHoverLinks();
 		this.applyActiveState();
 		this.renderPanel();
+	}
+
+	private togglePinGroupVisibility(groupId: string): void {
+		const group = this.pinGroups.find((item) => item.id === groupId);
+		if (!group) return;
+		group.visible = !group.visible;
+		this.refreshPinnedRouteVisibility();
+		this.renderPanel();
+	}
+
+	private refreshPinnedRouteVisibility(): void {
+		this.state.pinNeedsHoverLinks = this.pinnedPathsNeedHoverLinks();
+		this.applyActiveState();
 	}
 
 	private locatePin(pin: PinPath): void {
@@ -1160,7 +1284,9 @@ export class Radial2DController extends Component {
 	}
 
 	private pinnedPathsNeedHoverLinks(): boolean {
-		return this.pinnedPaths.some((pin) => pin.active && (pin.kind === 'link' || (pin.kind === 'node' && hoverHighlightsNoteLinks(pin.mode))));
+		return this.pinnedPaths.some(
+			(pin) => isPinnedRouteVisible(pin, this.pinGroups) && (pin.kind === 'link' || (pin.kind === 'node' && hoverHighlightsNoteLinks(pin.mode))),
+		);
 	}
 
 	private pinKindLabel(pin: PinPath): string {
@@ -1382,17 +1508,17 @@ function addHierarchyHighlights(
 		state.labelNodes.add(edge.source);
 		state.labelNodes.add(edge.target);
 	};
-	if (mode === 'hierarchy-parents' || mode === 'hierarchy-parents-direct' || mode === 'hierarchy-all') {
+	if (mode === 'hierarchy-parents' || mode === 'hierarchy-parents-direct' || mode === 'hierarchy-all' || mode === 'all-links') {
 		let edge = parentByChild.get(nodeId);
 		while (edge) {
 			addEdge(edge);
 			edge = parentByChild.get(edge.source);
 		}
 	}
-	if (mode === 'hierarchy-direct-children' || mode === 'hierarchy-parents-direct' || mode === 'hierarchy-all') {
+	if (mode === 'hierarchy-direct-children' || mode === 'hierarchy-parents-direct' || mode === 'hierarchy-all' || mode === 'all-links') {
 		for (const edge of childrenByParent.get(nodeId) ?? []) addEdge(edge);
 	}
-	if (mode === 'hierarchy-descendants' || mode === 'hierarchy-all') {
+	if (mode === 'hierarchy-descendants' || mode === 'hierarchy-all' || mode === 'all-links') {
 		const stack = [...(childrenByParent.get(nodeId) ?? [])];
 		while (stack.length > 0) {
 			const edge = stack.pop();

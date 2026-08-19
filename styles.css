@@ -531,14 +531,15 @@
 	--mwm-radial-label-root: #3f7fe8;
 	--mwm-radial-label-shadow: rgba(255, 255, 255, 0.92);
 	--mwm-legend-root-color: #3f7fe8;
-	--mwm-legend-folder-color: #7f92a8;
-	--mwm-legend-meta-color: #4f8ecb;
-	--mwm-legend-note-color: #a2abb7;
-	--mwm-legend-external-color: #7b6fd6;
-	--mwm-legend-unresolved-color: #dc4a4a;
-	--mwm-legend-tree-color: #93a3b8;
-	--mwm-legend-link-color: #a2acba;
-	--mwm-legend-external-link-color: #b8752e;
+	--mwm-legend-folder-color: #5f7f70;
+	--mwm-legend-meta-color: #237f92;
+	--mwm-legend-note-color: #956f8f;
+	--mwm-legend-external-color: #7a5aa6;
+	--mwm-legend-outside-note-color: #bd6a32;
+	--mwm-legend-unresolved-color: #b63e55;
+	--mwm-legend-tree-color: #6d3fa0;
+	--mwm-legend-link-color: #087f7b;
+	--mwm-legend-external-link-color: #b9661d;
 	--mwm-floating-bg: rgba(255, 255, 255, 0.82);
 	--mwm-floating-border: rgba(23, 32, 51, 0.14);
 	--mwm-floating-color: #172033;
@@ -552,14 +553,15 @@
 	--mwm-radial-label-root: #7c9cff;
 	--mwm-radial-label-shadow: rgba(0, 0, 0, 0.92);
 	--mwm-legend-root-color: #7c9cff;
-	--mwm-legend-folder-color: #d7dae2;
-	--mwm-legend-meta-color: #f59e0b;
-	--mwm-legend-note-color: #a1a8b5;
-	--mwm-legend-external-color: #c4b5fd;
-	--mwm-legend-unresolved-color: #fb7185;
-	--mwm-legend-tree-color: #818cf8;
-	--mwm-legend-link-color: #94a3b8;
-	--mwm-legend-external-link-color: #d97706;
+	--mwm-legend-folder-color: #8fb8a5;
+	--mwm-legend-meta-color: #5fc3d6;
+	--mwm-legend-note-color: #d0a8ca;
+	--mwm-legend-external-color: #b89be8;
+	--mwm-legend-outside-note-color: #f0a15f;
+	--mwm-legend-unresolved-color: #f27d92;
+	--mwm-legend-tree-color: #c4a7f2;
+	--mwm-legend-link-color: #4fd1c5;
+	--mwm-legend-external-link-color: #f2a65a;
 	--mwm-floating-bg: rgba(10, 14, 24, 0.64);
 	--mwm-floating-border: rgba(255, 255, 255, 0.12);
 	--mwm-floating-color: #e8ecf6;
@@ -878,9 +880,12 @@
 	--mwm-legend-color: var(--mwm-legend-note-color);
 }
 
-.mwm-legend-external,
-.mwm-legend-outside-file {
+.mwm-legend-external {
 	--mwm-legend-color: var(--mwm-legend-external-color);
+}
+
+.mwm-legend-outside-file {
+	--mwm-legend-color: var(--mwm-legend-outside-note-color);
 }
 
 .mwm-legend-unresolved {
@@ -988,6 +993,46 @@
 	min-width: 0;
 }
 
+.mwm-pin-group.is-muted > :not(.mwm-pin-group-header) {
+	opacity: 0.48;
+}
+
+.mwm-pin-group.is-muted .mwm-pin-group-title,
+.mwm-pin-group.is-muted .mwm-pin-count {
+	opacity: 0.52;
+}
+
+.mwm-pin-group-editor {
+	display: grid;
+	gap: 8px;
+	padding: 10px;
+	border: 1px solid var(--interactive-accent);
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--interactive-accent) 8%, transparent);
+}
+
+.mwm-pin-group-editor-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.mwm-pin-group-editor-title {
+	font-size: 12px;
+	font-weight: 650;
+}
+
+.mwm-pin-group-instructions {
+	color: var(--text-muted);
+	font-size: 10.5px;
+	line-height: 1.35;
+}
+
+.mwm-pin-group-editor-actions {
+	margin-top: 0;
+}
+
 .mwm-pin-group-header {
 	display: flex;
 	align-items: center;
@@ -1077,14 +1122,26 @@
 
 .mwm-pin-row {
 	display: grid;
-	grid-template-columns: auto minmax(0, 1fr);
+	grid-template-columns: minmax(0, 1fr);
 	align-items: start;
 	gap: 6px 8px;
 }
 
+.mwm-pin-row.is-selecting {
+	grid-template-columns: auto minmax(0, 1fr);
+	padding: 5px;
+	border: 1px solid transparent;
+	border-radius: 7px;
+}
+
+.mwm-pin-row.is-selecting.is-selected {
+	border-color: var(--interactive-accent);
+	background: color-mix(in srgb, var(--interactive-accent) 9%, transparent);
+}
+
 .mwm-pin-group-row {
 	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto;
+	grid-template-columns: minmax(0, 1fr);
 	align-items: center;
 }
 
@@ -1106,21 +1163,46 @@
 	padding: 3px 5px;
 }
 
+.mwm-pin-group-header > button,
+.mwm-pin-actions > button {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 5px;
+	background: var(--background-modifier-hover);
+	color: inherit;
+	cursor: pointer;
+	box-shadow: none;
+}
+
+.mwm-pin-group-header > button:hover,
+.mwm-pin-actions > button:hover {
+	background: var(--background-modifier-active-hover);
+}
+
+.mwm-pin-actions > button.is-danger,
+.galaxy-panel-row > button.is-danger {
+	color: var(--text-error);
+	border-color: color-mix(in srgb, var(--text-error) 38%, var(--background-modifier-border));
+}
+
 .mwm-pin-check {
 	margin-top: 14px;
 }
 
 .mwm-pin-main {
 	display: block;
-	grid-column: 2;
+	grid-column: 1;
 	min-width: 0;
 	overflow-x: hidden;
 	white-space: normal;
 	text-align: left;
 }
 
-.mwm-pin-actions {
+.mwm-pin-row.is-selecting .mwm-pin-main {
 	grid-column: 2;
+}
+
+.mwm-pin-actions {
+	grid-column: 1;
 	display: flex;
 	flex-wrap: wrap;
 	gap: 5px;

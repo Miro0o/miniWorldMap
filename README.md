@@ -29,13 +29,13 @@ The goal is to complement Obsidian's native Graph View and conventional mind-map
 - **3D Galaxy view:** fly through a Three.js graph with force layout, bloom, twinkle, orbit cruise, reveal animation, and search-to-fly navigation.
 - **Search:** open Mini World Map search from either mode and jump to notes, folders, unresolved links, or graph nodes.
 - **Re-rooting:** double-click a folder in 2D to use it as the current atlas root.
-- **Hierarchy highlighting:** hover a 2D node to highlight parents, direct children, descendants, or parent-plus-child paths.
+- **Semantic route highlighting:** hover a 2D node to highlight parents, children, or every connection at once; hierarchy, note, cross-root, and unresolved routes keep distinct colors while unrelated routes fade.
 - **Note-link highlighting:** hover nodes or link roads to inspect Obsidian internal links alongside the hierarchy.
 - **Link overlays:** draw aggregated internal links between visible 2D nodes.
 - **Cross-root links:** show links that leave the current 2D root as grouped outside branches, selected outside files, or exact outside files.
 - **Unresolved links:** optionally represent unresolved internal links as temporary nodes.
 - **Selection and inspection:** click nodes or links to inspect details in the side panel, including outgoing links and backlinks.
-- **Pinned paths:** pin highlighted 2D paths, group pins, and toggle pinned route visibility.
+- **Pinned paths:** pin each highlighted 2D route once, toggle its visibility, or enter a dedicated grouping mode to organize routes across one or more groups.
 - **Navigation:** double-click a 2D note to open it; use `Ctrl`/`Cmd` while opening to use a split pane.
 - **Context actions:** right-click 2D nodes to open notes, focus notes, use folders as roots, open representative folder notes, or pin paths.
 - **Canvas controls:** pan, zoom, fit, rebuild, return to vault root, switch language, and switch render modes.
@@ -59,6 +59,7 @@ Useful 2D interactions:
 - Click a node or link to pin the highlight and inspect it in the side panel.
 - Double-click a note to open it.
 - Double-click a folder to make it the atlas root.
+- Use **Full current root** to expand every hierarchy level and available note link without jumping back to the vault root.
 - Right-click a node for node actions.
 - Pan and zoom the canvas to move through large maps.
 
@@ -80,13 +81,13 @@ Global plugin settings include:
 - Default 2D render node limit.
 - Default 2D note-link limit.
 - 2D note-link overlay visibility.
-- 2D hover highlight mode and hover targets.
+- 2D hover highlight mode, including **All links**, and hoverable items.
 - 2D label visibility.
 - 2D ring spin.
 - 2D unresolved link handling.
 - Ignored folders.
 
-The 2D view panel also includes per-view controls for atlas/focus mode, vault root, complete map display, theme, depth, visible nodes, note-link budget, outside-link detail, exact outside-note limit, ring guides, and legend visibility.
+The 2D view panel also includes per-view controls for root/active-note mode, vault map, full current-root display, theme, hierarchy levels, node and note-link limits, cross-root detail, outside-note limit, depth rings, and legend visibility. Hover the panel tabs, buttons, or fields for concise explanations.
 
 The 3D view panel includes controls for search, recentering, reveal animation, visual style presets, theme presets, color themes, imported Obsidian graph colors, node sizing, bloom, physics, cruise motion, unresolved links, orphan nodes, quality tier, and default reset.
 

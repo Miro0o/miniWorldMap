@@ -145,6 +145,17 @@ describe('visible world graph', () => {
 		expect(graph.hoverLinkEdges.length).toBeGreaterThan(0);
 	});
 
+	it('keeps note links available for the all-connections hover mode', () => {
+		const m = model();
+		const state = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
+		state.rootPath = 'Atlas';
+		state.showLinkOverlay = false;
+		state.hoverHighlightMode = 'all-links';
+		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
+		expect(graph.rootId).toBe('Atlas');
+		expect(graph.hoverLinkEdges.length).toBeGreaterThan(0);
+	});
+
 	it('builds a focus graph around the active note', () => {
 		const m = model();
 		const state = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
@@ -192,6 +203,17 @@ describe('visible world graph', () => {
 		expect(complete.nodesById.has(deepNote)).toBe(true);
 		expect(complete.hiddenNodeCount).toBe(0);
 		expect(complete.linkEdges).toHaveLength(4);
+	});
+
+	it('expands a complete map without changing the selected root', () => {
+		const m = model();
+		const state = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
+		state.rootPath = 'Atlas';
+		state.atlasDepth = 1;
+		state.showCompleteRoot = true;
+		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
+		expect(graph.rootId).toBe('Atlas');
+		expect(graph.nodesById.has('Atlas/Sub/Topic B.md')).toBe(true);
 	});
 });
 

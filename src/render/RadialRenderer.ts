@@ -41,16 +41,22 @@ interface EdgeVisual {
 }
 
 export type RadialResolvedScheme = 'day' | 'night';
+export type RadialEdgeHighlightKind = 'hierarchy' | 'note-link' | 'outside-link' | 'unresolved-link';
+export type RadialNodeColorKind = 'root' | 'folder' | 'folder-note' | 'note' | 'outside-group' | 'outside-note' | 'unresolved';
 
 interface RadialPalette {
 	bg: string;
 	ring: string;
 	tree: string;
 	link: string;
-	external: string;
+	externalGroup: string;
+	externalNote: string;
 	externalLink: string;
 	unresolved: string;
-	focus: string;
+	highlightHierarchy: string;
+	highlightNoteLink: string;
+	highlightOutsideLink: string;
+	highlightUnresolvedLink: string;
 	folder: string;
 	folderMeta: string;
 	note: string;
@@ -68,15 +74,19 @@ const PALETTES: Record<RadialResolvedScheme, RadialPalette> = {
 	day: {
 		bg: '#f8fafc',
 		ring: '#9aa7b5',
-		tree: '#93a3b8',
-		link: '#a2acba',
-		external: '#7b6fd6',
+		tree: '#8b78a8',
+		link: '#6f9892',
+		externalGroup: '#7a5aa6',
+		externalNote: '#bd6a32',
 		externalLink: '#b8752e',
-		unresolved: '#dc4a4a',
-		focus: '#3f7fe8',
-		folder: '#7f92a8',
-		folderMeta: '#4f8ecb',
-		note: '#a2abb7',
+		unresolved: '#b63e55',
+		highlightHierarchy: '#6d3fa0',
+		highlightNoteLink: '#087f7b',
+		highlightOutsideLink: '#b9661d',
+		highlightUnresolvedLink: '#b63e55',
+		folder: '#5f7f70',
+		folderMeta: '#237f92',
+		note: '#956f8f',
 		root: '#3f7fe8',
 		ringOpacity: 0.22,
 		treeOpacity: 0.26,
@@ -89,15 +99,19 @@ const PALETTES: Record<RadialResolvedScheme, RadialPalette> = {
 	night: {
 		bg: '#1e1e1e',
 		ring: '#777b85',
-		tree: '#8a8f9c',
-		link: '#8b8f99',
-		external: '#a78bfa',
+		tree: '#9884ba',
+		link: '#6c9e9a',
+		externalGroup: '#b89be8',
+		externalNote: '#f0a15f',
 		externalLink: '#d97706',
-		unresolved: '#fb7185',
-		focus: '#8b7cf6',
-		folder: '#d5d8de',
-		folderMeta: '#c4b5fd',
-		note: '#a8adb7',
+		unresolved: '#f27d92',
+		highlightHierarchy: '#c4a7f2',
+		highlightNoteLink: '#4fd1c5',
+		highlightOutsideLink: '#f2a65a',
+		highlightUnresolvedLink: '#f27d92',
+		folder: '#8fb8a5',
+		folderMeta: '#5fc3d6',
+		note: '#d0a8ca',
 		root: '#a99cff',
 		ringOpacity: 0.22,
 		treeOpacity: 0.28,
@@ -121,8 +135,8 @@ export class RadialRenderer {
 	private scene = new Scene();
 	private labelRoot: HTMLElement;
 	private ringSegments: LineSegments | null = null;
-	private hierarchySegments: LineSegments | null = null;
-	private linkSegments: LineSegments | null = null;
+	private hierarchySegments: LineSegments<BufferGeometry, LineBasicMaterial> | null = null;
+	private linkSegments: LineSegments<BufferGeometry, LineBasicMaterial> | null = null;
 	private highlightSegments: Mesh | null = null;
 	private nodePoints: Points | null = null;
 	private nodeGeometry: BufferGeometry | null = null;
@@ -316,6 +330,7 @@ export class RadialRenderer {
 	setActive(active: RadialActiveState, labelVisibility: LabelVisibility): void {
 		this.active = active;
 		this.updateNodeDim();
+		this.updateEdgeDim();
 		this.rebuildHighlights();
 		this.updateLabels(labelVisibility);
 		this.render();
@@ -524,7 +539,8 @@ export class RadialRenderer {
 			colors[index * 3 + 1] = color.g;
 			colors[index * 3 + 2] = color.b;
 			sizes[index] = nodePointSize(point?.nodeRadius ?? 8, palette.nodeScale);
-			ghost[index] = node.type === 'unresolved' || node.type === 'external' || node.externalProxy ? 1 : 0;
+			// Outside notes use a hollow marker so the canvas matches their legend symbol.
+			ghost[index] = node.externalProxy ? 2 : node.type === 'unresolved' || node.type === 'external' ? 1 : 0;
 		});
 		this.nodeGeometry = new BufferGeometry();
 		this.nodeGeometry.setAttribute('position', new BufferAttribute(positions, 3));
@@ -567,6 +583,19 @@ export class RadialRenderer {
 		attr.needsUpdate = true;
 	}
 
+	private updateEdgeDim(): void {
+		const palette = this.palette();
+		const dimmed = this.active.dimOthers;
+		if (this.hierarchySegments) {
+			this.hierarchySegments.material.opacity = palette.treeOpacity * (dimmed ? 0.16 : 1);
+		}
+		if (this.linkSegments) {
+			const hasExternal = this.graph?.linkEdges.some((edge) => edge.externalCount) ?? false;
+			const baseOpacity = hasExternal ? palette.externalLinkOpacity : palette.linkOpacity;
+			this.linkSegments.material.opacity = baseOpacity * (dimmed ? 0.14 : 1);
+		}
+	}
+
 	private updateNodeScale(): void {
 		if (!this.nodeMaterial) return;
 		const sizeMul = this.nodeMaterial.uniforms['uSizeMul'];
@@ -591,11 +620,11 @@ export class RadialRenderer {
 		const positions: number[] = [];
 		const colors: number[] = [];
 		const palette = this.palette();
-		const color = new Color(palette.focus);
 		const zoom = Math.max(MIN_RADIAL_ZOOM, this.zoom || 1);
 		for (const key of this.active.highlightedEdges) {
 			const visual = this.edgeVisuals.get(key);
 			if (!visual) continue;
+			const color = edgeHighlightColor(visual.edge, palette);
 			for (let i = 0; i < visual.points.length - 1; i++) {
 				const a = visual.points[i];
 				const b = visual.points[i + 1];
@@ -809,18 +838,45 @@ function pushColor(colors: number[], color: Color, alpha: number): void {
 }
 
 function nodeColor(node: WorldNode, rootId: string, palette: RadialPalette): Color {
-	if (node.id === rootId) return new Color(palette.root);
-	if (node.type === 'unresolved') return new Color(palette.unresolved);
-	if (node.type === 'external' || node.externalProxy) return new Color(palette.external);
-	if (node.type === 'folder' && node.representativeFile) return new Color(palette.folderMeta);
-	if (node.type === 'folder') return new Color(palette.folder);
+	const kind = radialNodeColorKind(node, rootId);
+	if (kind === 'root') return new Color(palette.root);
+	if (kind === 'unresolved') return new Color(palette.unresolved);
+	if (kind === 'outside-note') return new Color(palette.externalNote);
+	if (kind === 'outside-group') return new Color(palette.externalGroup);
+	if (kind === 'folder-note') return new Color(palette.folderMeta);
+	if (kind === 'folder') return new Color(palette.folder);
 	return new Color(palette.note);
+}
+
+export function radialNodeColorKind(node: WorldNode, rootId: string): RadialNodeColorKind {
+	if (node.id === rootId) return 'root';
+	if (node.type === 'unresolved') return 'unresolved';
+	if (node.externalProxy) return 'outside-note';
+	if (node.type === 'external') return 'outside-group';
+	if (node.type === 'folder' && node.representativeFile) return 'folder-note';
+	if (node.type === 'folder') return 'folder';
+	return 'note';
 }
 
 function edgeColor(edge: WorldEdge, kind: 'hierarchy' | 'links', palette: RadialPalette): Color {
 	if (edge.unresolvedCount) return new Color(palette.unresolved);
-	if (edge.externalCount) return new Color(kind === 'links' ? palette.externalLink : palette.external);
+	if (edge.externalCount) return new Color(kind === 'links' ? palette.externalLink : palette.externalGroup);
 	return new Color(kind === 'hierarchy' ? palette.tree : palette.link);
+}
+
+function edgeHighlightColor(edge: WorldEdge, palette: RadialPalette): Color {
+	const kind = radialEdgeHighlightKind(edge);
+	if (kind === 'unresolved-link') return new Color(palette.highlightUnresolvedLink);
+	if (kind === 'outside-link') return new Color(palette.highlightOutsideLink);
+	if (kind === 'hierarchy') return new Color(palette.highlightHierarchy);
+	return new Color(palette.highlightNoteLink);
+}
+
+export function radialEdgeHighlightKind(edge: WorldEdge): RadialEdgeHighlightKind {
+	if (edge.unresolvedCount || edge.type === 'unresolved-link') return 'unresolved-link';
+	if (edge.externalCount || edge.type === 'external-hierarchy') return 'outside-link';
+	if (edge.type === 'hierarchy') return 'hierarchy';
+	return 'note-link';
 }
 
 function revealDepths(graph: VisibleWorldGraph, layout: RadialLayout, rootId: string): number[] {

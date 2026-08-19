@@ -46,6 +46,7 @@ export type LabelVisibility = 'auto' | 'hover';
 export type HoverTargetMode = 'nodes' | 'links' | 'both';
 export type HoverHighlightMode =
 	| 'none'
+	| 'all-links'
 	| 'note-links'
 	| 'hierarchy-parents'
 	| 'hierarchy-direct-children'
@@ -90,6 +91,7 @@ export const MAX_SWIRL_STRENGTH = 100;
 
 export const HOVER_HIGHLIGHT_MODE_OPTIONS: [HoverHighlightMode, string][] = [
 	['none', 'None'],
+	['all-links', 'All links'],
 	['note-links', 'Note links'],
 	['hierarchy-parents', 'Hierarchy parents'],
 	['hierarchy-direct-children', 'Hierarchy direct children'],
@@ -334,7 +336,8 @@ export function normalizeHoverTargetMode(value: unknown): HoverTargetMode {
 }
 
 export function hoverHighlightsNoteLinks(mode: unknown): boolean {
-	return normalizeHoverHighlightMode(mode) === 'note-links';
+	const normalized = normalizeHoverHighlightMode(mode);
+	return normalized === 'note-links' || normalized === 'all-links';
 }
 
 export function hoverHighlightModeLabel(mode: unknown): string {

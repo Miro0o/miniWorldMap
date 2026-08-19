@@ -1,5 +1,6 @@
 // Nodes are one THREE.Points draw call. Keep them close to the legacy
 // canvas look: filled discs with a visible rim and only a restrained core lift.
+// aGhost: 0 = filled, 1 = translucent, 2 = hollow outside-note marker.
 // aDim: 聚焦模式下非邻居淡出（0.12..1）
 
 export const NODE_VERTEX_SHADER = /* glsl */ `
@@ -37,14 +38,18 @@ uniform float uLightMode; // 0 = 深空（白热核心），1 = 晨昼（墨水�
 void main() {
 	vec2 uv = gl_PointCoord - 0.5;
 	float d = length(uv);
+	float ghost = step(0.5, vGhost);
+	float hollow = step(1.5, vGhost);
 
-	float core = smoothstep(0.16, 0.0, d) * 0.18 * (1.0 - vGhost) * (1.0 - uLightMode);
+	float core = smoothstep(0.16, 0.0, d) * 0.18 * (1.0 - ghost) * (1.0 - uLightMode);
 	vec3 col = mix(vColor, vec3(1.0), core);
 
 	float rim = smoothstep(0.36, 0.48, d) * smoothstep(0.51, 0.45, d);
 	col = mix(col, col * mix(0.58, 0.68, uLightMode), rim);
 
-	float alpha = smoothstep(0.5, 0.43, d) * mix(1.0, 0.5, vGhost) * vDim;
+	float discAlpha = smoothstep(0.5, 0.43, d) * mix(1.0, 0.5, ghost);
+	float hollowAlpha = smoothstep(0.5, 0.43, d) * smoothstep(0.27, 0.37, d);
+	float alpha = mix(discAlpha, hollowAlpha, hollow) * vDim;
 	if (alpha < 0.01) discard;
 	gl_FragColor = vec4(col, alpha);
 }

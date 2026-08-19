@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyVaultConfigDirDefault, mergeSettings } from '../src/settings';
+import { applyVaultConfigDirDefault, hoverHighlightsNoteLinks, mergeSettings } from '../src/settings';
 
 describe('Mini World Map settings migration', () => {
 	it('defaults to 2D radial mode and preserves legacy radial keys', () => {
@@ -31,6 +31,12 @@ describe('Mini World Map settings migration', () => {
 		expect(mergeSettings({}).radial.hoverTargetMode).toBe('nodes');
 		expect(mergeSettings({ radial: { hoverTargetMode: 'links' } }).radial.hoverTargetMode).toBe('links');
 		expect(mergeSettings({ radial: { hoverTargetMode: 'anything' } }).radial.hoverTargetMode).toBe('nodes');
+	});
+
+	it('supports highlighting every node connection on hover', () => {
+		expect(mergeSettings({ radial: { hoverHighlightMode: 'all-links' } }).radial.hoverHighlightMode).toBe('all-links');
+		expect(hoverHighlightsNoteLinks('all-links')).toBe(true);
+		expect(hoverHighlightsNoteLinks('hierarchy-all')).toBe(false);
 	});
 
 	it('adds the current vault config folder to default ignored folders', () => {
