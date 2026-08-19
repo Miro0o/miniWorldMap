@@ -1,6 +1,7 @@
+---
 name: Release Obsidian plugin
 
-on:
+'on':
   push:
     tags:
       - "*"
@@ -15,27 +16,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run release checks
+        run: |
+          npm test
+          npm run lint
+          npm run build
+
       - name: Validate release files
         run: |
-          test -f main.js
-          test -f manifest.json
-          test -f styles.css
-          node -e "JSON.parse(require('fs').readFileSync('manifest.json', 'utf8'))"
+          test -f dist/main.js
+          test -f dist/manifest.json
+          test -f dist/styles.css
+          cmp -s main.js dist/main.js
+          node -e "require('./dist/manifest.json')"
 
       - name: Attest release assets
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
-            main.js
-            manifest.json
-            styles.css
+            dist/main.js
+            dist/manifest.json
+            dist/styles.css
 
       - name: Create release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF_NAME}"
-          manifest_version="$(node -p "require('./manifest.json').version")"
+          manifest_version="$(
+            node -p "require('./dist/manifest.json').version"
+          )"
 
           if [ "$tag" != "$manifest_version" ]; then
             echo "Tag $tag does not match manifest version $manifest_version"
@@ -45,4 +63,4 @@ jobs:
           gh release create "$tag" \
             --title "$tag" \
             --notes-file CHANGELOG.md \
-            main.js manifest.json styles.css
+            dist/main.js dist/manifest.json dist/styles.css

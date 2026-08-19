@@ -94,6 +94,10 @@ const context = await esbuild.context({
 
 if (prod) {
 	await context.rebuild();
+	// Keep the checked-in Obsidian entry point aligned with the release bundle.
+	// GitHub releases are assembled from dist/, while root main.js remains useful
+	// for repository installs and can no longer silently lag behind the sources.
+	fs.copyFileSync(path.join(outDir, 'main.js'), path.resolve('./main.js'));
 	process.exit(0);
 } else {
 	await context.watch();

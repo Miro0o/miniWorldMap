@@ -22,7 +22,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { GraphData } from '../types';
 import { BLOOM_DEFAULTS, NODE_BASE_RADIUS, NODE_MAX_RADIUS, STARFIELD_ROTATION_RAD_PER_S } from '../constants';
-import { NODE_FRAGMENT_SHADER, NODE_VERTEX_SHADER } from './shaders';
+import { GALAXY_NODE_FRAGMENT_SHADER, GALAXY_NODE_VERTEX_SHADER } from './shaders';
 import { linkColor, fallbackColorFn } from './palette';
 import type { NodeColorFn } from './palette';
 import { buildStarfield, disposeStarfield, Twinkler } from './starfield';
@@ -151,8 +151,8 @@ export class AggregateRenderer {
 		this.nodeGeometry.setAttribute('aGhost', new BufferAttribute(ghost, 1));
 		this.nodeGeometry.setAttribute('aDim', new BufferAttribute(this.dimCurrent, 1));
 		this.nodeMaterial = new ShaderMaterial({
-			vertexShader: NODE_VERTEX_SHADER,
-			fragmentShader: NODE_FRAGMENT_SHADER,
+			vertexShader: GALAXY_NODE_VERTEX_SHADER,
+			fragmentShader: GALAXY_NODE_FRAGMENT_SHADER,
 			vertexColors: true,
 			transparent: true,
 			depthWrite: true,
@@ -162,7 +162,6 @@ export class AggregateRenderer {
 				uSizeContrast: { value: 1 },
 				uBasePoint: { value: 0 },
 				uMinPoint: { value: 0 },
-				uLightMode: { value: this.tokens.lightMode ? 1 : 0 },
 				uMaxPoint: { value: 110 * this.renderer.getPixelRatio() },
 			},
 		});
@@ -441,9 +440,6 @@ export class AggregateRenderer {
 		this.scene.background = new Color(tokens.background);
 		this.starfield.visible = tokens.starfield;
 		this.renderer.toneMapping = tokens.lightMode ? NoToneMapping : ACESFilmicToneMapping;
-		if (this.nodeMaterial) {
-			this.nodeMaterial.uniforms['uLightMode']!.value = tokens.lightMode ? 1 : 0;
-		}
 		this.bloomPass.enabled = tokens.bloomEnabled && this.tierBloomAllowed && bloomStrengthFromSettings > 0.001;
 		if (tokens.motes && !this.motes) this.buildMotes();
 		if (this.motes) this.motes.visible = tokens.motes;

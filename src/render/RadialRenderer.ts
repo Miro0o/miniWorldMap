@@ -10,18 +10,21 @@ import {
 	Points,
 	Scene,
 	ShaderMaterial,
-	Vector3,
 	WebGLRenderer,
 } from 'three';
 import type { LabelVisibility } from '../settings';
 import type { RadialLayout, RadialPoint, RadialRoute } from '../layout/radial/layoutRadial';
 import { ROOT_ID, type VisibleWorldGraph, type WorldEdge, type WorldNode } from '../world/types';
-import { NODE_FRAGMENT_SHADER, NODE_VERTEX_SHADER } from './shaders';
+import { RADIAL_NODE_FRAGMENT_SHADER, RADIAL_NODE_VERTEX_SHADER } from './shaders';
 
 // Hard floor keeps wheel math and hit-tests finite while still allowing huge complete maps to fit.
 export const MIN_RADIAL_ZOOM = 0.00001;
 export const MAX_RADIAL_ZOOM = 6;
 const NODE_BASE_POINT = 4.8;
+// Labels intentionally progress faster than geometry zoom so large maps reveal
+// their important names without requiring several extra wheel gestures.
+const LABEL_REVEAL_ACCELERATION = 2.2;
+const AUTO_LABEL_MIN_REVEAL_ZOOM = 0.045;
 
 export interface RadialActiveState {
 	hasActive: boolean;
@@ -43,6 +46,7 @@ interface EdgeVisual {
 export type RadialResolvedScheme = 'day' | 'night';
 export type RadialEdgeHighlightKind = 'hierarchy' | 'note-link' | 'outside-link' | 'unresolved-link';
 export type RadialNodeColorKind = 'root' | 'folder' | 'folder-note' | 'note' | 'outside-group' | 'outside-note' | 'unresolved';
+export type RadialNodeShapeKind = 'root-ring' | 'folder-outline' | 'folder-note-solid' | 'note-dot' | 'outside-diamond' | 'outside-ring' | 'unresolved-cross';
 
 interface RadialPalette {
 	bg: string;
@@ -73,21 +77,21 @@ interface RadialPalette {
 const PALETTES: Record<RadialResolvedScheme, RadialPalette> = {
 	day: {
 		bg: '#f8fafc',
-		ring: '#9aa7b5',
-		tree: '#8b78a8',
-		link: '#6f9892',
-		externalGroup: '#7a5aa6',
-		externalNote: '#bd6a32',
-		externalLink: '#b8752e',
-		unresolved: '#b63e55',
-		highlightHierarchy: '#6d3fa0',
-		highlightNoteLink: '#087f7b',
-		highlightOutsideLink: '#b9661d',
-		highlightUnresolvedLink: '#b63e55',
-		folder: '#5f7f70',
-		folderMeta: '#237f92',
-		note: '#956f8f',
-		root: '#3f7fe8',
+		ring: '#aeb7c5',
+		tree: '#aeb7c5',
+		link: '#9a86c9',
+		externalGroup: '#8b70c2',
+		externalNote: '#e99a2f',
+		externalLink: '#e99a2f',
+		unresolved: '#d66376',
+		highlightHierarchy: '#aeb7c5',
+		highlightNoteLink: '#6a4fc2',
+		highlightOutsideLink: '#e99a2f',
+		highlightUnresolvedLink: '#d66376',
+		folder: '#788395',
+		folderMeta: '#4479de',
+		note: '#8a79cf',
+		root: '#3568d4',
 		ringOpacity: 0.22,
 		treeOpacity: 0.26,
 		linkOpacity: 0.1,
@@ -97,26 +101,26 @@ const PALETTES: Record<RadialResolvedScheme, RadialPalette> = {
 		maxLabels: 170,
 	},
 	night: {
-		bg: '#1e1e1e',
-		ring: '#777b85',
-		tree: '#9884ba',
-		link: '#6c9e9a',
-		externalGroup: '#b89be8',
-		externalNote: '#f0a15f',
-		externalLink: '#d97706',
-		unresolved: '#f27d92',
-		highlightHierarchy: '#c4a7f2',
-		highlightNoteLink: '#4fd1c5',
-		highlightOutsideLink: '#f2a65a',
-		highlightUnresolvedLink: '#f27d92',
-		folder: '#8fb8a5',
-		folderMeta: '#5fc3d6',
-		note: '#d0a8ca',
-		root: '#a99cff',
-		ringOpacity: 0.22,
-		treeOpacity: 0.28,
-		linkOpacity: 0.12,
-		externalLinkOpacity: 0.14,
+		bg: '#10131a',
+		ring: '#4d586f',
+		tree: '#667189',
+		link: '#7f6daa',
+		externalGroup: '#c2abe7',
+		externalNote: '#ffc064',
+		externalLink: '#b07e43',
+		unresolved: '#f493a3',
+		highlightHierarchy: '#96a0b2',
+		highlightNoteLink: '#aa92ec',
+		highlightOutsideLink: '#ffc064',
+		highlightUnresolvedLink: '#f493a3',
+		folder: '#b2bac7',
+		folderMeta: '#82aaff',
+		note: '#c8baf2',
+		root: '#82a1ff',
+		ringOpacity: 0.25,
+		treeOpacity: 0.34,
+		linkOpacity: 0.28,
+		externalLinkOpacity: 0.25,
 		highlightOpacity: 0.98,
 		nodeScale: 0.32,
 		maxLabels: 300,
@@ -142,6 +146,8 @@ export class RadialRenderer {
 	private nodeGeometry: BufferGeometry | null = null;
 	private nodeMaterial: ShaderMaterial | null = null;
 	private nodeIds: string[] = [];
+	private rankedLabelNodes: { node: WorldNode; point: RadialPoint; score: number }[] = [];
+	private labelElements = new Map<string, HTMLElement>();
 	private edgeVisuals = new Map<string, EdgeVisual>();
 	private graph: VisibleWorldGraph | null = null;
 	private layout: RadialLayout | null = null;
@@ -157,6 +163,8 @@ export class RadialRenderer {
 	private revealOverlay: HTMLElement | null = null;
 	private renderBatchDepth = 0;
 	private pendingRender = false;
+	private pendingLabelUpdate = false;
+	private pendingHighlightRebuild = false;
 	private showRingGuides = false;
 	private revealDepthLimit = Number.POSITIVE_INFINITY;
 	private currentLabelVisibility: LabelVisibility = 'auto';
@@ -184,9 +192,7 @@ export class RadialRenderer {
 		this.background = background;
 		this.renderer.setClearColor(this.background, 1);
 		if (schemeChanged && this.nodeMaterial) {
-			const lightMode = this.nodeMaterial.uniforms['uLightMode'];
 			const pixelScale = this.nodeMaterial.uniforms['uPixelScale'];
-			if (lightMode) lightMode.value = scheme === 'day' ? 1 : 0;
 			if (pixelScale) pixelScale.value = 1000 * Math.min(window.devicePixelRatio || 1, 2);
 			this.updateNodeScale();
 		}
@@ -217,7 +223,6 @@ export class RadialRenderer {
 		}
 		this.buildNodes(this.graph, this.layout);
 		this.setActive(this.active, labelVisibility);
-		this.render();
 	}
 
 	resize(width: number, height: number): void {
@@ -230,18 +235,21 @@ export class RadialRenderer {
 		this.camera.bottom = -this.height / 2;
 		this.applyCamera();
 		this.updateLabels();
+		this.render();
 	}
 
 	setView(centerX: number, centerY: number, zoom: number): void {
+		const previousZoom = this.zoom;
 		this.centerX = Number.isFinite(centerX) ? centerX : 0;
 		this.centerY = Number.isFinite(centerY) ? centerY : 0;
 		this.zoom = Math.min(Math.max(Number.isFinite(zoom) ? zoom : 1, MIN_RADIAL_ZOOM), MAX_RADIAL_ZOOM);
-		this.updateNodeScale();
+		const zoomChanged = this.zoom !== previousZoom;
+		if (zoomChanged) this.updateNodeScale();
 		this.applyCamera();
-		const rebuiltHighlights = this.active.highlightedEdges.size > 0;
+		const rebuiltHighlights = zoomChanged && this.active.highlightedEdges.size > 0;
 		if (rebuiltHighlights) this.rebuildHighlights();
 		this.updateLabels();
-		if (rebuiltHighlights) this.render();
+		this.render();
 	}
 
 	getView(): { centerX: number; centerY: number; zoom: number } {
@@ -271,7 +279,16 @@ export class RadialRenderer {
 	endRenderBatch(): void {
 		if (this.renderBatchDepth <= 0) return;
 		this.renderBatchDepth--;
-		if (this.renderBatchDepth === 0 && this.pendingRender) {
+		if (this.renderBatchDepth !== 0) return;
+		if (this.pendingHighlightRebuild) {
+			this.pendingHighlightRebuild = false;
+			this.rebuildHighlights();
+		}
+		if (this.pendingLabelUpdate) {
+			this.pendingLabelUpdate = false;
+			this.updateLabels(this.currentLabelVisibility);
+		}
+		if (this.pendingRender) {
 			this.pendingRender = false;
 			this.render();
 		}
@@ -345,10 +362,9 @@ export class RadialRenderer {
 	}
 
 	worldToScreen(x: number, y: number): { x: number; y: number } {
-		const projected = new Vector3(x, y, 0).project(this.camera);
 		return {
-			x: ((projected.x + 1) / 2) * this.width,
-			y: ((1 - projected.y) / 2) * this.height,
+			x: (x - this.centerX) * this.zoom + this.width / 2,
+			y: (this.centerY - y) * this.zoom + this.height / 2,
 		};
 	}
 
@@ -452,7 +468,6 @@ export class RadialRenderer {
 		this.camera.position.set(this.centerX, this.centerY, 1000);
 		this.camera.zoom = this.zoom;
 		this.camera.updateProjectionMatrix();
-		this.render();
 	}
 
 	private buildRings(): void {
@@ -522,35 +537,46 @@ export class RadialRenderer {
 
 	private buildNodes(graph: VisibleWorldGraph, layout: RadialLayout): void {
 		const palette = this.palette();
+		const colorsByKind = nodeColors(palette);
 		const visibleNodes = graph.nodes.filter((node) => this.pointRevealVisible(layout.positions.get(node.id)));
+		this.rankedLabelNodes = visibleNodes
+			.map((node) => {
+				const point = layout.positions.get(node.id);
+				return point ? { node, point, score: labelScore(node, point, graph) } : null;
+			})
+			.filter((item): item is { node: WorldNode; point: RadialPoint; score: number } => item !== null)
+			.sort((a, b) => b.score - a.score);
 		const positions = new Float32Array(visibleNodes.length * 3);
 		const colors = new Float32Array(visibleNodes.length * 3);
 		const sizes = new Float32Array(visibleNodes.length);
 		const ghost = new Float32Array(visibleNodes.length);
+		const shapes = new Float32Array(visibleNodes.length);
 		const dim = new Float32Array(visibleNodes.length).fill(1);
 		this.nodeIds = visibleNodes.map((node) => node.id);
 		visibleNodes.forEach((node, index) => {
 			const point = layout.positions.get(node.id);
-			const color = nodeColor(node, graph.rootId, palette);
+			const kind = radialNodeColorKind(node, graph.rootId);
+			const color = colorsByKind[kind];
 			positions[index * 3] = point?.x ?? 0;
 			positions[index * 3 + 1] = point?.y ?? 0;
 			positions[index * 3 + 2] = 1;
 			colors[index * 3] = color.r;
 			colors[index * 3 + 1] = color.g;
 			colors[index * 3 + 2] = color.b;
-			sizes[index] = nodePointSize(point?.nodeRadius ?? 8, palette.nodeScale);
-			// Outside notes use a hollow marker so the canvas matches their legend symbol.
-			ghost[index] = node.externalProxy ? 2 : node.type === 'unresolved' || node.type === 'external' ? 1 : 0;
+			sizes[index] = nodePointSize(point?.nodeRadius ?? 8, palette.nodeScale) * nodeShapeScale(kind);
+			ghost[index] = kind === 'outside-note' || kind === 'outside-group' || kind === 'unresolved' ? 1 : 0;
+			shapes[index] = nodeShapeCode(nodeShapeKind(kind));
 		});
 		this.nodeGeometry = new BufferGeometry();
 		this.nodeGeometry.setAttribute('position', new BufferAttribute(positions, 3));
 		this.nodeGeometry.setAttribute('color', new BufferAttribute(colors, 3));
 		this.nodeGeometry.setAttribute('aSize', new BufferAttribute(sizes, 1));
 		this.nodeGeometry.setAttribute('aGhost', new BufferAttribute(ghost, 1));
+		this.nodeGeometry.setAttribute('aShape', new BufferAttribute(shapes, 1));
 		this.nodeGeometry.setAttribute('aDim', new BufferAttribute(dim, 1));
 		this.nodeMaterial = new ShaderMaterial({
-			vertexShader: NODE_VERTEX_SHADER,
-			fragmentShader: NODE_FRAGMENT_SHADER,
+			vertexShader: RADIAL_NODE_VERTEX_SHADER,
+			fragmentShader: RADIAL_NODE_FRAGMENT_SHADER,
 			vertexColors: true,
 			transparent: true,
 			depthWrite: false,
@@ -560,7 +586,6 @@ export class RadialRenderer {
 				uSizeContrast: { value: nodeSizeContrast(this.zoom) },
 				uBasePoint: { value: NODE_BASE_POINT },
 				uMinPoint: { value: nodeMinPoint(this.zoom) * Math.min(window.devicePixelRatio || 1, 2) },
-				uLightMode: { value: this.scheme === 'day' ? 1 : 0 },
 				uMaxPoint: { value: nodeMaxPoint(this.zoom) * Math.min(window.devicePixelRatio || 1, 2) },
 			},
 		});
@@ -573,12 +598,13 @@ export class RadialRenderer {
 		if (!this.nodeGeometry) return;
 		const attr = this.nodeGeometry.getAttribute('aDim') as BufferAttribute;
 		const dim = attr.array as Float32Array;
+		const idleOpacity = this.scheme === 'night' ? 0.94 : 0.82;
 		for (let i = 0; i < this.nodeIds.length; i++) {
 			const id = this.nodeIds[i] ?? '';
 			const focused =
 				id === this.active.activeNodeId || this.active.pinnedNodeIds.has(id) || id === this.graph?.focusId;
 			const related = this.active.relatedNodes.has(id);
-			dim[i] = this.active.dimOthers && !focused && !related ? 0.23 : focused ? 1.12 : related ? 0.95 : 0.82;
+			dim[i] = this.active.dimOthers && !focused && !related ? 0.23 : focused ? 1.12 : related ? 0.95 : idleOpacity;
 		}
 		attr.needsUpdate = true;
 	}
@@ -610,6 +636,10 @@ export class RadialRenderer {
 	}
 
 	private rebuildHighlights(): void {
+		if (this.renderBatchDepth > 0) {
+			this.pendingHighlightRebuild = true;
+			return;
+		}
 		if (this.highlightSegments) {
 			this.scene.remove(this.highlightSegments);
 			this.highlightSegments.geometry.dispose();
@@ -668,8 +698,12 @@ export class RadialRenderer {
 	}
 
 	private updateLabels(labelVisibility: LabelVisibility = 'auto'): void {
+		this.currentLabelVisibility = labelVisibility;
+		if (this.renderBatchDepth > 0) {
+			this.pendingLabelUpdate = true;
+			return;
+		}
 		if (!this.graph || !this.layout) return;
-		this.labelRoot.empty();
 		const directIds = new Set<string>();
 		const addDirect = (id: string | null | undefined) => {
 			if (id !== null && id !== undefined) directIds.add(id);
@@ -680,24 +714,23 @@ export class RadialRenderer {
 		addDirect(ROOT_ID);
 		addDirect(this.graph.rootId);
 		addDirect(this.graph.focusId);
-		const ranked = this.graph.nodes
-			.map((node) => {
-				const point = this.layout?.positions.get(node.id) ?? null;
-				if (!this.pointRevealVisible(point)) return null;
+		const ranked = this.rankedLabelNodes
+			.map(({ node, point }) => {
 				const screen = this.worldToScreen(point.x, point.y);
 				const visible = screen.x >= -160 && screen.y >= -80 && screen.x <= this.width + 160 && screen.y <= this.height + 120;
-				return visible ? { node, point, screen, score: labelScore(node, point, this.graph!) } : null;
+				return visible ? { node, point, screen } : null;
 			})
-			.filter((item): item is { node: WorldNode; point: RadialPoint; screen: { x: number; y: number }; score: number } => Boolean(item))
-			.sort((a, b) => b.score - a.score);
+			.filter((item): item is { node: WorldNode; point: RadialPoint; screen: { x: number; y: number } } => item !== null);
 		const denominator = Math.max(1, ranked.length - 1);
 		const viewportScale = clampNumber(Math.sqrt(Math.max(1, this.width * this.height)) / 1050, 0.65, 1.8);
-		const zoomCapacity = 22 + smoothstep(0.035, 0.42, this.zoom) * 64 + smoothstep(0.36, 1.3, this.zoom) * 112 + smoothstep(1.1, 6, this.zoom) * 72;
+		const revealZoom = labelRevealZoom(this.zoom);
+		const zoomCapacity = 22 + smoothstep(0.035, 0.42, revealZoom) * 64 + smoothstep(0.36, 1.3, revealZoom) * 112 + smoothstep(1.1, 6, revealZoom) * 72;
 		const autoBudget =
-			labelVisibility === 'auto' && this.zoom >= 0.045
+			labelVisibility === 'auto' && revealZoom >= AUTO_LABEL_MIN_REVEAL_ZOOM
 				? Math.round(Math.min(this.palette().maxLabels, Math.max(0, zoomCapacity * viewportScale)))
 				: 0;
 		let autoShown = 0;
+		const shownIds = new Set<string>();
 		for (let rank = 0; rank < ranked.length; rank++) {
 			const item = ranked[rank]!;
 			const { node, point, screen } = item;
@@ -716,8 +749,15 @@ export class RadialRenderer {
 			const labelClasses = ['mwm-radial-label'];
 			if (rootNode) labelClasses.push('is-root');
 			if (!rootNode && (leading || node.type === 'folder')) labelClasses.push('is-strong');
-			const label = this.labelRoot.createDiv({ cls: labelClasses.join(' ') });
-			label.setText(node.title);
+			shownIds.add(node.id);
+			let label = this.labelElements.get(node.id);
+			if (!label) {
+				label = this.labelRoot.createDiv();
+				this.labelElements.set(node.id, label);
+			}
+			label.className = labelClasses.join(' ');
+			if (label.textContent !== node.title) label.setText(node.title);
+			this.labelRoot.appendChild(label);
 			const scale = labelScreenScale(this.zoom) * (rootNode ? 1.18 : point.nodeRadius >= 24 ? 1.1 : point.nodeRadius >= 15 ? 1.04 : 1);
 			const fontSize = Math.max(rootNode ? 12 : 9.5, 12 * scale);
 			label.style.fontSize = `${fontSize.toFixed(2)}px`;
@@ -730,6 +770,11 @@ export class RadialRenderer {
 				label.style.opacity = String(Math.min(Number(label.style.opacity) || 1, 0.34));
 				label.addClass('is-dim');
 			}
+		}
+		for (const [id, label] of this.labelElements) {
+			if (shownIds.has(id)) continue;
+			label.remove();
+			this.labelElements.delete(id);
 		}
 	}
 
@@ -748,6 +793,8 @@ export class RadialRenderer {
 		this.nodePoints = null;
 		this.nodeGeometry = null;
 		this.nodeMaterial = null;
+		this.rankedLabelNodes = [];
+		this.labelElements.clear();
 		this.labelRoot.empty();
 	}
 }
@@ -837,15 +884,16 @@ function pushColor(colors: number[], color: Color, alpha: number): void {
 	colors.push(color.r, color.g, color.b);
 }
 
-function nodeColor(node: WorldNode, rootId: string, palette: RadialPalette): Color {
-	const kind = radialNodeColorKind(node, rootId);
-	if (kind === 'root') return new Color(palette.root);
-	if (kind === 'unresolved') return new Color(palette.unresolved);
-	if (kind === 'outside-note') return new Color(palette.externalNote);
-	if (kind === 'outside-group') return new Color(palette.externalGroup);
-	if (kind === 'folder-note') return new Color(palette.folderMeta);
-	if (kind === 'folder') return new Color(palette.folder);
-	return new Color(palette.note);
+function nodeColors(palette: RadialPalette): Record<RadialNodeColorKind, Color> {
+	return {
+		root: new Color(palette.root),
+		folder: new Color(palette.folder),
+		'folder-note': new Color(palette.folderMeta),
+		note: new Color(palette.note),
+		'outside-group': new Color(palette.externalGroup),
+		'outside-note': new Color(palette.externalNote),
+		unresolved: new Color(palette.unresolved),
+	};
 }
 
 export function radialNodeColorKind(node: WorldNode, rootId: string): RadialNodeColorKind {
@@ -856,6 +904,38 @@ export function radialNodeColorKind(node: WorldNode, rootId: string): RadialNode
 	if (node.type === 'folder' && node.representativeFile) return 'folder-note';
 	if (node.type === 'folder') return 'folder';
 	return 'note';
+}
+
+
+export function radialNodeShapeKind(node: WorldNode, rootId: string): RadialNodeShapeKind {
+	return nodeShapeKind(radialNodeColorKind(node, rootId));
+}
+
+function nodeShapeKind(kind: RadialNodeColorKind): RadialNodeShapeKind {
+	if (kind === 'folder') return 'folder-outline';
+	if (kind === 'folder-note') return 'folder-note-solid';
+	if (kind === 'root') return 'root-ring';
+	if (kind === 'outside-group') return 'outside-diamond';
+	if (kind === 'outside-note') return 'outside-ring';
+	if (kind === 'unresolved') return 'unresolved-cross';
+	return 'note-dot';
+}
+
+function nodeShapeCode(shape: RadialNodeShapeKind): number {
+	if (shape === 'folder-outline') return 1;
+	if (shape === 'folder-note-solid') return 2;
+	if (shape === 'root-ring') return 3;
+	if (shape === 'outside-diamond') return 4;
+	if (shape === 'outside-ring') return 5;
+	if (shape === 'unresolved-cross') return 6;
+	return 0;
+}
+
+function nodeShapeScale(kind: RadialNodeColorKind): number {
+	if (kind === 'root') return 1.3;
+	if (kind === 'folder' || kind === 'folder-note') return 1.18;
+	if (kind === 'outside-group' || kind === 'outside-note' || kind === 'unresolved') return 1.12;
+	return 1;
 }
 
 function edgeColor(edge: WorldEdge, kind: 'hierarchy' | 'links', palette: RadialPalette): Color {
@@ -983,8 +1063,9 @@ function zoomLabelStrength(
 	height: number,
 ): number {
 	const clampedZoom = clampNumber(zoom, MIN_RADIAL_ZOOM, MAX_RADIAL_ZOOM);
+	const revealZoom = labelRevealZoom(clampedZoom);
 	const root = node.id === graph.rootId;
-	if (root) return 0.68 + smoothstep(0.04, 0.2, clampedZoom) * 0.32;
+	if (root) return 0.68 + smoothstep(0.04, 0.2, revealZoom) * 0.32;
 	const degree = Math.max(0, (node.linkCount || 0) + (node.backlinkCount || 0));
 	const folder = node.type === 'folder';
 	const external = node.type === 'external' || node.externalProxy;
@@ -1009,24 +1090,28 @@ function zoomLabelStrength(
 	if (unresolved) threshold += 0.18;
 
 	threshold = clampNumber(threshold, 0.08, 1.22);
-	const fade = smoothstep(threshold - 0.18, threshold + 0.1, clampedZoom);
+	const fade = smoothstep(threshold - 0.18, threshold + 0.1, revealZoom);
 	const leadingFade = leading
-		? smoothstep(0.07, 0.26, clampedZoom)
+		? smoothstep(0.07, 0.26, revealZoom)
 		: secondary
-			? smoothstep(0.14, 0.44, clampedZoom) * 0.92
+			? smoothstep(0.14, 0.44, revealZoom) * 0.92
 			: tertiary
-				? smoothstep(0.28, 0.7, clampedZoom) * 0.74
+				? smoothstep(0.28, 0.7, revealZoom) * 0.74
 				: 0;
 	const largeFade =
 		point.nodeRadius >= 24
-			? smoothstep(0.14, 0.42, clampedZoom) * 0.98
+			? smoothstep(0.14, 0.42, revealZoom) * 0.98
 			: point.nodeRadius >= 15
-				? smoothstep(0.24, 0.64, clampedZoom) * 0.82
+				? smoothstep(0.24, 0.64, revealZoom) * 0.82
 				: 0;
-	const apparentFade = !unresolved ? smoothstep(0.12, 0.82, clampedZoom) * apparentSignal * 0.96 : 0;
-	const smallFade = !unresolved ? smoothstep(0.48, 0.98, clampedZoom) * 0.9 : 0;
-	const closeFade = !unresolved ? smoothstep(0.82, 1.18, clampedZoom) * 0.98 : 0;
+	const apparentFade = !unresolved ? smoothstep(0.12, 0.82, revealZoom) * apparentSignal * 0.96 : 0;
+	const smallFade = !unresolved ? smoothstep(0.48, 0.98, revealZoom) * 0.9 : 0;
+	const closeFade = !unresolved ? smoothstep(0.82, 1.18, revealZoom) * 0.98 : 0;
 	return clampNumber(Math.max(fade, leadingFade, largeFade, apparentFade, smallFade, closeFade), 0, 1);
+}
+
+function labelRevealZoom(zoom: number): number {
+	return clampNumber(zoom * LABEL_REVEAL_ACCELERATION, MIN_RADIAL_ZOOM, MAX_RADIAL_ZOOM);
 }
 
 function labelScreenScale(zoom: number): number {

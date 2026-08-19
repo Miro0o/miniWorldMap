@@ -104,7 +104,7 @@ npm run build
 Useful scripts:
 
 - `npm run dev` starts the esbuild watcher.
-- `npm run build` validates TypeScript and writes release assets.
+- `npm run build` validates TypeScript, writes release assets to `dist/`, and refreshes the checked-in `main.js` bundle.
 - `npm test` runs the Vitest suite.
 - `npm run lint` runs ESLint.
 

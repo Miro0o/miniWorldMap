@@ -20,6 +20,11 @@
 .galaxy-panel {
 	--mwm-action-button-min-height: 36px;
 	--mwm-link-row-min-height: 42px;
+	--mwm-field-bg: var(--background-primary);
+	--mwm-field-border: var(--background-modifier-border);
+	--mwm-field-text: var(--text-normal);
+	--mwm-field-placeholder: var(--text-muted);
+	--mwm-field-option-bg: var(--background-primary);
 	position: absolute;
 	top: 12px;
 	left: 12px;
@@ -39,6 +44,7 @@
 }
 
 .galaxy-panel.gx-theme-space {
+	color-scheme: dark;
 	--background-primary: rgba(8, 12, 27, 0.92);
 	--background-secondary: rgba(3, 6, 18, 0.88);
 	--background-modifier-border: rgba(154, 164, 255, 0.18);
@@ -52,10 +58,16 @@
 	--mwm-panel-border: rgba(154, 164, 255, 0.18);
 	--mwm-panel-text: #e8ecf6;
 	--mwm-panel-shadow: 0 18px 42px rgba(0, 0, 3, 0.42);
+	--mwm-field-bg: #080c1b;
+	--mwm-field-border: rgba(154, 164, 255, 0.28);
+	--mwm-field-text: #e8ecf6;
+	--mwm-field-placeholder: #8f9ab5;
+	--mwm-field-option-bg: #080c1b;
 	backdrop-filter: blur(16px);
 }
 
 .galaxy-panel.gx-theme-dark {
+	color-scheme: dark;
 	--background-primary: rgba(37, 37, 37, 0.95);
 	--background-secondary: rgba(30, 30, 30, 0.94);
 	--background-modifier-border: rgba(255, 255, 255, 0.12);
@@ -69,9 +81,15 @@
 	--mwm-panel-border: rgba(255, 255, 255, 0.12);
 	--mwm-panel-text: #f8fafc;
 	--mwm-panel-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
+	--mwm-field-bg: #202020;
+	--mwm-field-border: rgba(255, 255, 255, 0.18);
+	--mwm-field-text: #f8fafc;
+	--mwm-field-placeholder: #9298a3;
+	--mwm-field-option-bg: #202020;
 }
 
 .galaxy-panel.gx-theme-night {
+	color-scheme: dark;
 	--background-primary: rgba(37, 37, 37, 0.95);
 	--background-secondary: rgba(30, 30, 30, 0.94);
 	--background-modifier-border: rgba(255, 255, 255, 0.12);
@@ -85,10 +103,16 @@
 	--mwm-panel-border: rgba(255, 255, 255, 0.12);
 	--mwm-panel-text: #f8fafc;
 	--mwm-panel-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
+	--mwm-field-bg: #202020;
+	--mwm-field-border: rgba(255, 255, 255, 0.18);
+	--mwm-field-text: #f8fafc;
+	--mwm-field-placeholder: #9298a3;
+	--mwm-field-option-bg: #202020;
 	backdrop-filter: blur(14px);
 }
 
 .galaxy-panel.gx-theme-light {
+	color-scheme: light;
 	--background-primary: rgba(255, 252, 245, 0.88);
 	--background-secondary: rgba(246, 244, 239, 0.94);
 	--background-modifier-border: rgba(46, 42, 36, 0.16);
@@ -102,6 +126,11 @@
 	--mwm-panel-border: rgba(46, 42, 36, 0.16);
 	--mwm-panel-text: #2e2a24;
 	--mwm-panel-shadow: 0 14px 34px rgba(46, 42, 36, 0.14);
+	--mwm-field-bg: #fffdf8;
+	--mwm-field-border: rgba(46, 42, 36, 0.22);
+	--mwm-field-text: #2e2a24;
+	--mwm-field-placeholder: #817970;
+	--mwm-field-option-bg: #fffdf8;
 	backdrop-filter: blur(14px);
 }
 
@@ -491,15 +520,15 @@
 	font-size: 11px;
 	padding: 5px 6px;
 	border-radius: 6px;
-	background: var(--background-modifier-hover);
-	border: 1px solid var(--background-modifier-border);
-	color: inherit;
+	background-color: var(--mwm-field-bg);
+	border: 1px solid var(--mwm-field-border);
+	color: var(--mwm-field-text);
 	cursor: pointer;
 }
 
 .gx-theme-select option {
-	color: var(--text-normal);
-	background: var(--background-primary);
+	color: var(--mwm-field-text);
+	background-color: var(--mwm-field-option-bg);
 }
 
 /* ---------- M4 移动端 ---------- */
@@ -528,18 +557,18 @@
 	--mwm-radial-bg: #f8fafc;
 	--mwm-radial-text: #172033;
 	--mwm-radial-label: #172033;
-	--mwm-radial-label-root: #3f7fe8;
+	--mwm-radial-label-root: #3568d4;
 	--mwm-radial-label-shadow: rgba(255, 255, 255, 0.92);
-	--mwm-legend-root-color: #3f7fe8;
-	--mwm-legend-folder-color: #5f7f70;
-	--mwm-legend-meta-color: #237f92;
-	--mwm-legend-note-color: #956f8f;
-	--mwm-legend-external-color: #7a5aa6;
-	--mwm-legend-outside-note-color: #bd6a32;
-	--mwm-legend-unresolved-color: #b63e55;
-	--mwm-legend-tree-color: #6d3fa0;
-	--mwm-legend-link-color: #087f7b;
-	--mwm-legend-external-link-color: #b9661d;
+	--mwm-legend-root-color: #3568d4;
+	--mwm-legend-folder-color: #788395;
+	--mwm-legend-meta-color: #4479de;
+	--mwm-legend-note-color: #8a79cf;
+	--mwm-legend-external-color: #8b70c2;
+	--mwm-legend-outside-note-color: #e99a2f;
+	--mwm-legend-unresolved-color: #d66376;
+	--mwm-legend-tree-color: #aeb7c5;
+	--mwm-legend-link-color: #6a4fc2;
+	--mwm-legend-external-link-color: #e99a2f;
 	--mwm-floating-bg: rgba(255, 255, 255, 0.82);
 	--mwm-floating-border: rgba(23, 32, 51, 0.14);
 	--mwm-floating-color: #172033;
@@ -547,21 +576,21 @@
 
 .mini-world-map-view.is-night-scheme,
 .theme-dark .mini-world-map-view:not(.is-day-scheme) {
-	--mwm-radial-bg: #1e1e1e;
+	--mwm-radial-bg: #10131a;
 	--mwm-radial-text: #f8fafc;
 	--mwm-radial-label: #f8fafc;
-	--mwm-radial-label-root: #7c9cff;
+	--mwm-radial-label-root: #82a1ff;
 	--mwm-radial-label-shadow: rgba(0, 0, 0, 0.92);
-	--mwm-legend-root-color: #7c9cff;
-	--mwm-legend-folder-color: #8fb8a5;
-	--mwm-legend-meta-color: #5fc3d6;
-	--mwm-legend-note-color: #d0a8ca;
-	--mwm-legend-external-color: #b89be8;
-	--mwm-legend-outside-note-color: #f0a15f;
-	--mwm-legend-unresolved-color: #f27d92;
-	--mwm-legend-tree-color: #c4a7f2;
-	--mwm-legend-link-color: #4fd1c5;
-	--mwm-legend-external-link-color: #f2a65a;
+	--mwm-legend-root-color: #82a1ff;
+	--mwm-legend-folder-color: #b2bac7;
+	--mwm-legend-meta-color: #82aaff;
+	--mwm-legend-note-color: #c8baf2;
+	--mwm-legend-external-color: #c2abe7;
+	--mwm-legend-outside-note-color: #ffc064;
+	--mwm-legend-unresolved-color: #f493a3;
+	--mwm-legend-tree-color: #96a0b2;
+	--mwm-legend-link-color: #aa92ec;
+	--mwm-legend-external-link-color: #ffc064;
 	--mwm-floating-bg: rgba(10, 14, 24, 0.64);
 	--mwm-floating-border: rgba(255, 255, 255, 0.12);
 	--mwm-floating-color: #e8ecf6;
@@ -758,6 +787,30 @@
 	color: var(--text-on-accent);
 }
 
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) button:not(.is-active):not(.is-danger):not(:disabled):hover {
+	background-color: var(--background-modifier-active-hover) !important;
+	border-color: color-mix(in srgb, var(--mwm-field-text) 28%, var(--background-modifier-border)) !important;
+	color: var(--text-normal) !important;
+	box-shadow: none !important;
+}
+
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) button.is-active:hover {
+	background-color: var(--interactive-accent) !important;
+	border-color: var(--interactive-accent) !important;
+	color: var(--text-on-accent) !important;
+	box-shadow: none !important;
+}
+
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) button:disabled,
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) button:disabled:hover {
+	background-color: var(--background-modifier-hover) !important;
+	border-color: var(--background-modifier-border) !important;
+	color: var(--text-muted) !important;
+	box-shadow: none !important;
+	opacity: 0.52;
+	cursor: not-allowed;
+}
+
 .mwm-map-panel,
 .mwm-radial-panel {
 	width: min(380px, calc(100vw - 24px));
@@ -809,6 +862,105 @@
 	width: 100%;
 	max-width: 100%;
 	font-size: 11px;
+}
+
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) input:not([type='checkbox']):not([type='radio']):not([type='range']),
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) select,
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) textarea {
+	min-height: 30px;
+	padding: 5px 7px;
+	border: 1px solid var(--mwm-field-border) !important;
+	border-radius: 6px;
+	outline: none;
+	background-color: var(--mwm-field-bg) !important;
+	color: var(--mwm-field-text) !important;
+	caret-color: var(--mwm-field-text);
+	box-shadow: none !important;
+}
+
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) select option,
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) select optgroup {
+	background-color: var(--mwm-field-option-bg) !important;
+	color: var(--mwm-field-text) !important;
+}
+
+.galaxy-panel input::placeholder,
+.galaxy-panel textarea::placeholder {
+	color: var(--mwm-field-placeholder);
+	opacity: 1;
+}
+
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) input:not([type='checkbox']):not([type='radio']):not([type='range']):hover,
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) select:hover,
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) textarea:hover {
+	border-color: color-mix(in srgb, var(--mwm-field-text) 34%, var(--mwm-field-border)) !important;
+	background-color: var(--mwm-field-bg) !important;
+	color: var(--mwm-field-text) !important;
+	box-shadow: none !important;
+}
+
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) input:not([type='checkbox']):not([type='radio']):not([type='range']):focus,
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) select:focus,
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) textarea:focus {
+	border-color: var(--interactive-accent) !important;
+	background-color: var(--mwm-field-bg) !important;
+	color: var(--mwm-field-text) !important;
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 24%, transparent) !important;
+}
+
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) input[type='checkbox'] {
+	appearance: none;
+	-webkit-appearance: none;
+	display: inline-grid;
+	place-content: center;
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	margin: 0;
+	border: 1px solid var(--mwm-field-border) !important;
+	border-radius: 4px;
+	background-color: var(--mwm-field-bg) !important;
+	color: var(--text-on-accent) !important;
+	box-shadow: none !important;
+	cursor: pointer;
+}
+
+.galaxy-panel input[type='checkbox']::before {
+	content: '';
+	width: 8px;
+	height: 4px;
+	border-bottom: 2px solid currentColor;
+	border-left: 2px solid currentColor;
+	transform: rotate(-45deg) scale(0);
+	transition: transform 90ms ease-out;
+}
+
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) input[type='checkbox']:hover {
+	border-color: var(--interactive-accent) !important;
+	background-color: var(--mwm-field-bg) !important;
+	box-shadow: none !important;
+}
+
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) input[type='checkbox']:checked,
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) input[type='checkbox']:checked:hover {
+	border-color: var(--interactive-accent) !important;
+	background-color: var(--interactive-accent) !important;
+}
+
+.galaxy-panel input[type='checkbox']:checked::before {
+	transform: rotate(-45deg) scale(1);
+}
+
+.galaxy-panel input[type='checkbox']:focus-visible {
+	outline: 2px solid color-mix(in srgb, var(--interactive-accent) 58%, transparent);
+	outline-offset: 2px;
+}
+
+.galaxy-panel input:disabled,
+.galaxy-panel select:disabled,
+.galaxy-panel textarea:disabled {
+	opacity: 0.52;
+	cursor: not-allowed;
 }
 
 .mwm-panel-field textarea {
@@ -868,12 +1020,43 @@
 	--mwm-legend-color: var(--mwm-legend-root-color);
 }
 
+.mwm-legend-root::before {
+	width: 14px;
+	height: 14px;
+	background: radial-gradient(
+		circle,
+		var(--mwm-legend-color) 0 2px,
+		transparent 2.5px 5px,
+		var(--mwm-legend-color) 5.5px 7px
+	);
+	box-shadow: none;
+}
+
 .mwm-legend-folder {
 	--mwm-legend-color: var(--mwm-legend-folder-color);
 }
 
+.mwm-legend-folder::before {
+	width: 11px;
+	height: 11px;
+	border: 2px solid var(--mwm-legend-color);
+	border-radius: 3px;
+	background: transparent;
+	box-shadow: none;
+}
+
 .mwm-legend-meta {
 	--mwm-legend-color: var(--mwm-legend-meta-color);
+}
+
+.mwm-legend-meta::before {
+	width: 13px;
+	height: 13px;
+	border-radius: 3px;
+	background:
+		radial-gradient(circle, var(--mwm-radial-bg) 0 2px, transparent 2.5px),
+		var(--mwm-legend-color);
+	box-shadow: none;
 }
 
 .mwm-legend-note {
@@ -884,12 +1067,39 @@
 	--mwm-legend-color: var(--mwm-legend-external-color);
 }
 
+.mwm-legend-external::before {
+	width: 10px;
+	height: 10px;
+	border-radius: 2px;
+	transform: rotate(45deg);
+	box-shadow: none;
+}
+
 .mwm-legend-outside-file {
 	--mwm-legend-color: var(--mwm-legend-outside-note-color);
 }
 
 .mwm-legend-unresolved {
 	--mwm-legend-color: var(--mwm-legend-unresolved-color);
+}
+
+.mwm-legend-unresolved::before,
+.mwm-legend-unresolved::after {
+	content: "";
+	position: absolute;
+	width: 2px;
+	height: 15px;
+	border-radius: 2px;
+	background: var(--mwm-legend-color);
+	box-shadow: none;
+}
+
+.mwm-legend-unresolved::before {
+	transform: rotate(45deg);
+}
+
+.mwm-legend-unresolved::after {
+	transform: rotate(-45deg);
 }
 
 .mwm-legend-outside-file::before {
@@ -926,6 +1136,10 @@
 }
 
 .mwm-legend-link-unresolved::before {
+	border-top-style: dotted;
+}
+
+.mwm-legend-link-external::before {
 	border-top-style: dashed;
 }
 
@@ -1182,6 +1396,13 @@
 .galaxy-panel-row > button.is-danger {
 	color: var(--text-error);
 	border-color: color-mix(in srgb, var(--text-error) 38%, var(--background-modifier-border));
+}
+
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) button.is-danger:hover {
+	background-color: color-mix(in srgb, var(--text-error) 12%, transparent) !important;
+	border-color: color-mix(in srgb, var(--text-error) 52%, var(--background-modifier-border)) !important;
+	color: var(--text-error) !important;
+	box-shadow: none !important;
 }
 
 .mwm-pin-check {

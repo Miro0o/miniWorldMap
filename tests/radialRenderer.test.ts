@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { radialEdgeHighlightKind, radialNodeColorKind } from '../src/render/RadialRenderer';
+import { radialEdgeHighlightKind, radialNodeColorKind, radialNodeShapeKind } from '../src/render/RadialRenderer';
 import type { WorldEdge, WorldNode } from '../src/world/types';
 
 function edge(overrides: Partial<WorldEdge> = {}): WorldEdge {
@@ -44,10 +44,15 @@ describe('2D semantic node colors', () => {
 		expect(radialNodeColorKind(node({ type: 'folder' }), '')).toBe('folder');
 		expect(radialNodeColorKind(node({ type: 'folder', representativeFile: 'Topic/Topic.md' }), '')).toBe('folder-note');
 		expect(radialNodeColorKind(node(), '')).toBe('note');
+		expect(radialNodeShapeKind(node({ type: 'folder' }), '')).toBe('folder-outline');
+		expect(radialNodeShapeKind(node({ type: 'folder', representativeFile: 'Topic/Topic.md' }), '')).toBe('folder-note-solid');
+		expect(radialNodeShapeKind(node(), '')).toBe('note-dot');
 	});
 
 	it('distinguishes exact outside notes from grouped outside branches', () => {
 		expect(radialNodeColorKind(node({ externalProxy: true }), '')).toBe('outside-note');
 		expect(radialNodeColorKind(node({ type: 'external' }), '')).toBe('outside-group');
+		expect(radialNodeShapeKind(node({ externalProxy: true }), '')).toBe('outside-ring');
+		expect(radialNodeShapeKind(node({ type: 'external' }), '')).toBe('outside-diamond');
 	});
 });

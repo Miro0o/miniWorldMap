@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.6
+
+- Add semantic 2D node shapes, clearer route colors, faster label updates, and an All links hover mode.
+- Improve pinned-route grouping, panel guidance, theme controls, and full-map expansion for the current root.
+- Rebuild, validate, and attest release assets in CI while keeping the checked-in plugin bundle synchronized.
+
 ## 0.2.5
 
 - Refresh the map control panels with clearer headings, denser controls, and accessible collapse state.

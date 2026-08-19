@@ -35,12 +35,13 @@ import {
 	layoutRadialGraph,
 	type RadialLayout,
 } from '../layout/radial/layoutRadial';
-import { MAX_RADIAL_ZOOM, MIN_RADIAL_ZOOM, RadialRenderer, emptyActiveState, radialFallbackBackground, type RadialActiveState, type RadialResolvedScheme } from '../render/RadialRenderer';
+import { MAX_RADIAL_ZOOM, MIN_RADIAL_ZOOM, RadialRenderer, emptyActiveState, radialFallbackBackground, radialNodeColorKind, type RadialActiveState, type RadialResolvedScheme } from '../render/RadialRenderer';
 import { resolveObsidianBackground } from '../render/obsidianTheme';
 import { ROOT_ID, type VisibleGraphState, type VisibleWorldGraph, type WorldEdge, type WorldNode } from '../world/types';
 import { WorldMapIndex } from '../world/WorldMapIndex';
 import { defaultVisibleGraphState } from '../world/visibleGraph';
 import { NodeSearchModal } from './SearchModal';
+import { radialNodeLegendLabelKey } from './radialNodeLegend';
 import {
 	addPinGroupMembership,
 	canStartPinGrouping,
@@ -155,7 +156,6 @@ export class Radial2DController extends Component {
 			this.needsFit = false;
 			return;
 		}
-		this.renderer.render();
 	}
 
 	onCssChange(): void {
@@ -283,6 +283,18 @@ export class Radial2DController extends Component {
 	private bindRendererEvents(): void {
 		const canvas = this.renderer?.domElement;
 		if (!canvas) return;
+		let dragFrame = 0;
+		let pendingDragView: { centerX: number; centerY: number; zoom: number } | null = null;
+		const flushDragView = () => {
+			dragFrame = 0;
+			const next = pendingDragView;
+			pendingDragView = null;
+			if (next) this.renderer?.setView(next.centerX, next.centerY, next.zoom);
+		};
+		const scheduleDragView = (centerX: number, centerY: number, zoom: number) => {
+			pendingDragView = { centerX, centerY, zoom };
+			if (dragFrame === 0) dragFrame = window.requestAnimationFrame(flushDragView);
+		};
 		const onWheel = (event: WheelEvent) => {
 			event.preventDefault();
 			const renderer = this.renderer;
@@ -313,13 +325,15 @@ export class Radial2DController extends Component {
 				const dy = event.clientY - this.drag.startY;
 				this.drag.moved = this.drag.moved || Math.hypot(dx, dy) > 3;
 				const view = renderer.getView();
-				renderer.setView(this.drag.centerX - dx / view.zoom, this.drag.centerY + dy / view.zoom, view.zoom);
+				scheduleDragView(this.drag.centerX - dx / view.zoom, this.drag.centerY + dy / view.zoom, view.zoom);
 				return;
 			}
 			this.updateHover(event.clientX - rect.left, event.clientY - rect.top);
 		};
 		const onPointerUp = (event: PointerEvent) => {
 			const wasDrag = this.drag?.moved ?? false;
+			if (dragFrame !== 0) window.cancelAnimationFrame(dragFrame);
+			flushDragView();
 			this.drag = null;
 			canvas.releasePointerCapture?.(event.pointerId);
 			if (wasDrag) return;
@@ -359,6 +373,8 @@ export class Radial2DController extends Component {
 		canvas.addEventListener('dblclick', onDblClick);
 		canvas.addEventListener('contextmenu', onContextMenu);
 		this.register(() => {
+			if (dragFrame !== 0) window.cancelAnimationFrame(dragFrame);
+			pendingDragView = null;
 			canvas.removeEventListener('wheel', onWheel);
 			canvas.removeEventListener('pointerdown', onPointerDown);
 			canvas.removeEventListener('pointermove', onPointerMove);
@@ -543,7 +559,7 @@ export class Radial2DController extends Component {
 		parent.createDiv({ cls: 'mwm-side-path', text: node.path || '/' });
 		const facts = parent.createDiv({ cls: 'mwm-facts' });
 		for (const [label, value] of [
-			[this.t('inspect.type'), this.searchKindLabel(node)],
+			[this.t('inspect.type'), this.detailKindLabel(node)],
 			[this.t('inspect.depth'), String(node.depth)],
 			[this.t('inspect.notes'), String(node.noteCount || node.descendantCount || 0)],
 			[this.t('inspect.out'), String(node.linkCount || 0)],
@@ -867,6 +883,11 @@ export class Radial2DController extends Component {
 		if (node.type === 'unresolved') return this.t('3d.searchUnresolved');
 		if (node.type === 'external') return this.t('search.external');
 		return this.t('search.note');
+	}
+
+	private detailKindLabel(node: WorldNode): string {
+		const rootId = this.graph?.rootId ?? this.state.rootPath;
+		return this.t(radialNodeLegendLabelKey(radialNodeColorKind(node, rootId)));
 	}
 
 	private renderControlsPage(parent: HTMLElement): void {
@@ -1414,14 +1435,13 @@ export class Radial2DController extends Component {
 
 	private syncThemeClass(): void {
 		const canvasScheme = this.resolvedCanvasScheme();
-		const panelScheme = this.resolvedPanelScheme();
 		const canvasBackground = resolveObsidianBackground(canvasScheme, radialFallbackBackground(canvasScheme));
 		this.contentEl.style.setProperty('--mwm-radial-bg', canvasBackground);
 		this.contentEl.toggleClass('is-day-scheme', canvasScheme === 'day');
 		this.contentEl.toggleClass('is-night-scheme', canvasScheme === 'night');
 		this.panel?.removeClass('gx-theme-dark');
 		this.panel?.removeClass('gx-theme-light');
-		this.panel?.addClass(panelScheme === 'day' ? 'gx-theme-light' : 'gx-theme-dark');
+		this.panel?.addClass(canvasScheme === 'day' ? 'gx-theme-light' : 'gx-theme-dark');
 		const renderer = this.renderer;
 		renderer?.beginRenderBatch();
 		try {
@@ -1435,10 +1455,6 @@ export class Radial2DController extends Component {
 	private resolvedCanvasScheme(): RadialResolvedScheme {
 		const scheme = normalizeColorScheme(this.radial().colorScheme);
 		if (scheme === 'day' || scheme === 'night') return scheme;
-		return activeDocument.body.hasClass('theme-dark') ? 'night' : 'day';
-	}
-
-	private resolvedPanelScheme(): RadialResolvedScheme {
 		return activeDocument.body.hasClass('theme-dark') ? 'night' : 'day';
 	}
 
