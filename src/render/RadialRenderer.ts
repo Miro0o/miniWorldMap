@@ -16,6 +16,7 @@ import type { LabelVisibility } from '../settings';
 import type { RadialLayout, RadialPoint, RadialRoute } from '../layout/radial/layoutRadial';
 import { ROOT_ID, type VisibleWorldGraph, type WorldEdge, type WorldNode } from '../world/types';
 import { RADIAL_NODE_FRAGMENT_SHADER, RADIAL_NODE_VERTEX_SHADER } from './shaders';
+import { SpatialIndex, type SpatialBounds } from './SpatialIndex';
 
 // Hard floor keeps wheel math and hit-tests finite while still allowing huge complete maps to fit.
 export const MIN_RADIAL_ZOOM = 0.00001;
@@ -149,6 +150,11 @@ export class RadialRenderer {
 	private rankedLabelNodes: { node: WorldNode; point: RadialPoint; score: number }[] = [];
 	private labelElements = new Map<string, HTMLElement>();
 	private edgeVisuals = new Map<string, EdgeVisual>();
+	private allEdgeVisuals = new Map<string, EdgeVisual>();
+	private nodeHitIndex: SpatialIndex<WorldNode> | null = null;
+	private edgeHitIndex: SpatialIndex<EdgeVisual> | null = null;
+	private linkPickingEnabled = false;
+	private maxHitNodeRadius = 0;
 	private graph: VisibleWorldGraph | null = null;
 	private layout: RadialLayout | null = null;
 	private active: RadialActiveState = emptyActiveState();
@@ -201,11 +207,52 @@ export class RadialRenderer {
 	}
 
 	setData(graph: VisibleWorldGraph, layout: RadialLayout, labelVisibility: LabelVisibility, showRingGuides = false): void {
+		const geometryChanged = this.graph !== graph || this.layout !== layout;
 		this.graph = graph;
 		this.layout = layout;
 		this.showRingGuides = showRingGuides;
 		this.currentLabelVisibility = labelVisibility;
+		if (geometryChanged) this.rebuildHitIndexes(graph, layout);
 		this.rebuildSceneObjects(labelVisibility);
+	}
+
+	private rebuildHitIndexes(graph: VisibleWorldGraph, layout: RadialLayout): void {
+		this.maxHitNodeRadius = 0;
+		const nodes = graph.nodes.filter((node) => layout.positions.has(node.id));
+		this.nodeHitIndex = new SpatialIndex(nodes, (node) => {
+			const point = layout.positions.get(node.id)!;
+			this.maxHitNodeRadius = Math.max(this.maxHitNodeRadius, point.nodeRadius);
+			return { minX: point.x, minY: point.y, maxX: point.x, maxY: point.y };
+		});
+		this.allEdgeVisuals.clear();
+		for (const edge of [...graph.hierarchyEdges, ...graph.linkEdges, ...graph.hoverLinkEdges]) {
+			if (this.allEdgeVisuals.has(edge.id)) continue;
+			const visual = this.edgeVisual(edge, layout);
+			if (visual) this.allEdgeVisuals.set(edge.id, visual);
+		}
+		this.edgeHitIndex = null;
+		if (this.linkPickingEnabled) this.ensureEdgeHitIndex();
+	}
+
+	setLinkPickingEnabled(enabled: boolean): void {
+		this.linkPickingEnabled = enabled;
+		if (enabled && this.graph) this.ensureEdgeHitIndex();
+	}
+
+	private ensureEdgeHitIndex(): SpatialIndex<EdgeVisual> {
+		if (this.edgeHitIndex) return this.edgeHitIndex;
+		const links = [...this.allEdgeVisuals.values()].filter(({ edge }) => edge.type !== 'hierarchy' && edge.type !== 'external-hierarchy');
+		this.edgeHitIndex = new SpatialIndex(links, (visual) => {
+			const bounds: SpatialBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+			for (const point of visual.points) {
+				bounds.minX = Math.min(bounds.minX, point.x);
+				bounds.minY = Math.min(bounds.minY, point.y);
+				bounds.maxX = Math.max(bounds.maxX, point.x);
+				bounds.maxY = Math.max(bounds.maxY, point.y);
+			}
+			return bounds;
+		});
+		return this.edgeHitIndex;
 	}
 
 	private rebuildSceneObjects(labelVisibility = this.currentLabelVisibility): void {
@@ -218,7 +265,7 @@ export class RadialRenderer {
 		for (const edge of this.graph.hoverLinkEdges) {
 			if (!this.edgeRevealVisible(edge, this.layout)) continue;
 			if (this.edgeVisuals.has(edge.id)) continue;
-			const visual = this.edgeVisual(edge, this.layout);
+			const visual = this.allEdgeVisuals.get(edge.id);
 			if (visual) this.edgeVisuals.set(visual.key, visual);
 		}
 		this.buildNodes(this.graph, this.layout);
@@ -385,7 +432,8 @@ export class RadialRenderer {
 		const world = this.screenToWorld(screenX, screenY);
 		let bestNode: { id: string; distance: number } | null = null;
 		if (includeNodes) {
-			for (const node of this.graph.nodes) {
+			const maxRadius = Math.max(this.maxHitNodeRadius * 0.36, Math.max(4, nodeMaxPoint(this.zoom) * 0.55) / this.zoom) + Math.max(5, 6 / this.zoom);
+			for (const node of this.nodeHitIndex?.query(world.x, world.y, maxRadius) ?? []) {
 				const point = this.layout.positions.get(node.id);
 				if (!this.pointRevealVisible(point)) continue;
 				const distance = Math.hypot(world.x - point.x, world.y - point.y);
@@ -397,8 +445,8 @@ export class RadialRenderer {
 		if (bestNode) return { nodeId: bestNode.id, edge: null };
 		if (!includeLinks) return { nodeId: null, edge: null };
 		let bestEdge: { edge: WorldEdge; distance: number } | null = null;
-		for (const visual of this.edgeVisuals.values()) {
-			if (visual.edge.type === 'hierarchy' || visual.edge.type === 'external-hierarchy') continue;
+		for (const visual of this.ensureEdgeHitIndex().query(world.x, world.y, Math.max(10, 8 / this.zoom))) {
+			if (!this.edgeVisuals.has(visual.key)) continue;
 			const distance = distanceToPolyline(world, visual.points);
 			if (distance <= Math.max(10, 8 / this.zoom) && (!bestEdge || distance < bestEdge.distance)) {
 				bestEdge = { edge: visual.edge, distance };
@@ -418,6 +466,12 @@ export class RadialRenderer {
 		this.revealOverlay?.remove();
 		this.domElement.remove();
 		this.labelRoot.remove();
+		this.edgeVisuals.clear();
+		this.allEdgeVisuals.clear();
+		this.nodeHitIndex = null;
+		this.edgeHitIndex = null;
+		this.graph = null;
+		this.layout = null;
 	}
 
 	private palette(): RadialPalette {
@@ -502,23 +556,38 @@ export class RadialRenderer {
 	}
 
 	private buildEdges(edges: WorldEdge[], layout: RadialLayout, kind: 'hierarchy' | 'links'): void {
-		const positions: number[] = [];
-		const colors: number[] = [];
+		const visuals: EdgeVisual[] = [];
+		let componentCount = 0;
 		const palette = this.palette();
 		for (const edge of edges) {
 			if (!this.edgeRevealVisible(edge, layout)) continue;
-			const visual = this.edgeVisual(edge, layout);
+			const visual = this.allEdgeVisuals.get(edge.id);
 			if (!visual) continue;
 			this.edgeVisuals.set(visual.key, visual);
-			const color = edgeColor(edge, kind, palette);
+			visuals.push(visual);
+			componentCount += Math.max(0, visual.points.length - 1) * 6;
+		}
+		// Write the final GPU arrays directly instead of growing JS arrays and
+		// copying them. Vertex order, coordinates and colors are unchanged.
+		const positions = new Float32Array(componentCount);
+		const colors = new Float32Array(componentCount);
+		let offset = 0;
+		const z = kind === 'hierarchy' ? -1 : -2;
+		for (const visual of visuals) {
+			const color = edgeColor(visual.edge, kind, palette);
 			for (let i = 0; i < visual.points.length - 1; i++) {
-				const a = visual.points[i];
-				const b = visual.points[i + 1];
-				if (!a || !b) continue;
-				positions.push(a.x, a.y, kind === 'hierarchy' ? -1 : -2);
-				positions.push(b.x, b.y, kind === 'hierarchy' ? -1 : -2);
-				pushColor(colors, color, kind === 'hierarchy' ? 0.46 : edge.externalCount ? 0.22 : 0.16);
-				pushColor(colors, color, kind === 'hierarchy' ? 0.46 : edge.externalCount ? 0.22 : 0.16);
+				const a = visual.points[i]!;
+				const b = visual.points[i + 1]!;
+				positions[offset] = a.x;
+				positions[offset + 1] = a.y;
+				positions[offset + 2] = z;
+				positions[offset + 3] = b.x;
+				positions[offset + 4] = b.y;
+				positions[offset + 5] = z;
+				colors[offset] = colors[offset + 3] = color.r;
+				colors[offset + 1] = colors[offset + 4] = color.g;
+				colors[offset + 2] = colors[offset + 5] = color.b;
+				offset += 6;
 			}
 		}
 		const line = new LineSegments(
@@ -697,7 +766,7 @@ export class RadialRenderer {
 		return Boolean(point && point.depth <= this.revealDepthLimit + 0.001);
 	}
 
-	private updateLabels(labelVisibility: LabelVisibility = 'auto'): void {
+	private updateLabels(labelVisibility: LabelVisibility = this.currentLabelVisibility): void {
 		this.currentLabelVisibility = labelVisibility;
 		if (this.renderBatchDepth > 0) {
 			this.pendingLabelUpdate = true;
@@ -812,10 +881,10 @@ export function emptyActiveState(): RadialActiveState {
 	};
 }
 
-function makeLineGeometry(positions: number[], colors: number[]): BufferGeometry {
+function makeLineGeometry(positions: number[] | Float32Array, colors: number[] | Float32Array): BufferGeometry {
 	const geometry = new BufferGeometry();
-	geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
-	geometry.setAttribute('color', new BufferAttribute(new Float32Array(colors), 3));
+	geometry.setAttribute('position', new BufferAttribute(positions instanceof Float32Array ? positions : new Float32Array(positions), 3));
+	geometry.setAttribute('color', new BufferAttribute(colors instanceof Float32Array ? colors : new Float32Array(colors), 3));
 	return geometry;
 }
 

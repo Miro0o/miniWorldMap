@@ -1,4 +1,4 @@
-import { Component, Menu, Notice, TFile, debounce, setIcon, type App } from 'obsidian';
+import { Component, Menu, Notice, TFile, debounce, setIcon, type App, type Debouncer } from 'obsidian';
 import type { Language, MiniWorldMapSettings, RadialSettings, ViewMode } from '../settings';
 import {
 	HOVER_HIGHLIGHT_MODE_OPTIONS,
@@ -32,7 +32,6 @@ import {
 import {
 	DEFAULT_NODE_SPACING,
 	DEFAULT_RING_SPACING,
-	layoutRadialGraph,
 	type RadialLayout,
 } from '../layout/radial/layoutRadial';
 import { MAX_RADIAL_ZOOM, MIN_RADIAL_ZOOM, RadialRenderer, emptyActiveState, radialFallbackBackground, radialNodeColorKind, type RadialActiveState, type RadialResolvedScheme } from '../render/RadialRenderer';
@@ -42,6 +41,9 @@ import { WorldMapIndex } from '../world/WorldMapIndex';
 import { defaultVisibleGraphState } from '../world/visibleGraph';
 import { NodeSearchModal } from './SearchModal';
 import { radialNodeLegendLabelKey } from './radialNodeLegend';
+import { addHierarchyHighlights, createHighlightIndex, type HighlightIndex } from './radialHighlights';
+import { waitForMetadata } from '../data/waitForMetadata';
+import { animationFrames, filterLegendGraph } from './radialViewHelpers';
 import {
 	addPinGroupMembership,
 	canStartPinGrouping,
@@ -76,7 +78,10 @@ export class Radial2DController extends Component {
 	private index: WorldMapIndex;
 	private state: VisibleGraphState;
 	private graph: VisibleWorldGraph | null = null;
+	private highlightIndex: HighlightIndex | null = null;
 	private layout: RadialLayout | null = null;
+	private layoutGraph: VisibleWorldGraph | null = null;
+	private layoutSwirlStrength = 0;
 	private renderer: RadialRenderer | null = null;
 	private canvasHost: HTMLElement | null = null;
 	private panel: HTMLElement | null = null;
@@ -97,18 +102,19 @@ export class Radial2DController extends Component {
 	private disposed = false;
 	private startupSettled = false;
 	private rebuildToken = 0;
+	private revealPending = false;
 	private drag:
 		| { pointerId: number; startX: number; startY: number; centerX: number; centerY: number; moved: boolean }
 		| null = null;
 	private needsFit = true;
-	private saveSoon: () => void;
-	private redrawSoon: () => void;
+	private saveSoon: Debouncer<[], void>;
+	private redrawSoon: Debouncer<[], void>;
 
 	constructor(
 		private app: App,
 		private contentEl: HTMLElement,
 		private settings: MiniWorldMapSettings,
-		private saveSettings: () => void,
+		saveSettings: () => void,
 		private onViewMode: (mode: ViewMode) => void,
 		private onLanguage: (language: Language) => void,
 	) {
@@ -127,6 +133,7 @@ export class Radial2DController extends Component {
 		this.contentEl.addClass('mwm-radial-mode');
 		this.canvasHost = this.contentEl.createDiv({ cls: 'mwm-radial-host' });
 		this.renderer = new RadialRenderer(this.canvasHost);
+		this.renderer.setLinkPickingEnabled(this.hoverTargets().links);
 		this.syncThemeClass();
 		this.buildPanel();
 		this.buildFloatingControls();
@@ -141,6 +148,10 @@ export class Radial2DController extends Component {
 
 	onunload(): void {
 		this.disposed = true;
+		this.rebuildToken++;
+		this.redrawSoon.cancel();
+		this.saveSoon.run();
+		this.index.dispose();
 		super.onunload();
 	}
 
@@ -162,7 +173,11 @@ export class Radial2DController extends Component {
 	}
 
 	rebuild(reason: string): void {
-		void this.queueRebuild(reason);
+		void this.queueRebuild(reason).catch((error: unknown) => {
+			if (this.disposed) return;
+			this.renderer?.clearLoadingMask(true);
+			console.error('[mini-world-map] Rebuild failed', error);
+		});
 	}
 
 	private async queueRebuild(reason: string): Promise<void> {
@@ -171,16 +186,20 @@ export class Radial2DController extends Component {
 	}
 
 	private async rebuildNow(reason: string, token: number): Promise<void> {
-		const radial = this.radial();
+		if (this.disposed || token !== this.rebuildToken) return;
+		const radial = { ...this.radial() };
 		const shouldReveal = ['start', 'manual', 'root', 'focus', 'atlas', 'complete'].includes(reason);
 		const loadingText = this.t('loading.radial');
 		if (shouldReveal) {
+			this.revealPending = true;
 			this.renderer?.showLoadingMask(loadingText);
 			await animationFrames(2);
 			if (this.disposed || token !== this.rebuildToken) return;
 		}
 		const indexSettings = this.state.showCompleteRoot ? { ...radial, includeUnresolvedLinks: true } : radial;
-		this.index.rebuild(indexSettings);
+		if (reason === 'manual') this.index.invalidate();
+		if (!await this.index.ensureReady(indexSettings)) return;
+		if (this.disposed || token !== this.rebuildToken) return;
 		this.state.hoverHighlightMode = radial.hoverHighlightMode;
 		this.state.labelVisibility = radial.labelVisibility;
 		if (this.state.showCompleteRoot) this.applyCompleteMapState();
@@ -191,20 +210,31 @@ export class Radial2DController extends Component {
 		this.state.pinNeedsHoverLinks = this.pinnedPathsNeedHoverLinks();
 		this.state.selectedNodeId = this.selectedNodeId;
 		this.state.selectedLink = this.selectedLink;
-		const preserveView = this.shouldPreserveView(reason) ? this.renderer?.getView() : null;
-		const preserveAnchorId = preserveView ? (this.graph?.rootId ?? this.state.rootPath ?? ROOT_ID) : null;
-		const preserveAnchorPoint = preserveAnchorId !== null ? (this.layout?.positions.get(preserveAnchorId) ?? this.layout?.positions.get(ROOT_ID) ?? null) : null;
 		const renderGraph = this.index.buildVisibleGraph({ ...this.state });
 		const layoutGraph = this.index.buildVisibleGraph(this.legendNeutralLayoutState());
 		const renderHidden = new Set(this.state.hiddenLegendItems);
 		if (!this.state.showLinkOverlay) renderHidden.add('link');
 		const graph = filterLegendGraph(renderGraph, renderHidden);
+		let layout = this.layout;
+		if (!this.layout || this.layoutGraph !== layoutGraph || this.layoutSwirlStrength !== radial.swirlStrength) {
+			layout = await this.index.computation.layout(layoutGraph, {
+				ringSpacing: DEFAULT_RING_SPACING,
+				nodeSpacing: DEFAULT_NODE_SPACING,
+				swirlStrength: radial.swirlStrength,
+			});
+		}
+		if (!layout || this.disposed || token !== this.rebuildToken) return;
+		// Capture the current camera after computation so panning during a rebuild survives.
+		const preserveView = this.shouldPreserveView(reason) ? this.renderer?.getView() : null;
+		const preserveAnchorId = preserveView ? (this.graph?.rootId ?? this.state.rootPath ?? ROOT_ID) : null;
+		const preserveAnchorPoint = preserveAnchorId !== null ? (this.layout?.positions.get(preserveAnchorId) ?? this.layout?.positions.get(ROOT_ID) ?? null) : null;
 		this.graph = graph;
-		this.layout = layoutRadialGraph(layoutGraph, {
-			ringSpacing: DEFAULT_RING_SPACING,
-			nodeSpacing: DEFAULT_NODE_SPACING,
-			swirlStrength: radial.swirlStrength,
-		});
+		this.highlightIndex = createHighlightIndex(graph);
+		this.layout = layout;
+		this.layoutGraph = layoutGraph;
+		this.layoutSwirlStrength = radial.swirlStrength;
+		const reveal = this.revealPending;
+		this.revealPending = false;
 		const renderer = this.renderer;
 		let revealRootId: string | null = null;
 		renderer?.beginRenderBatch();
@@ -219,11 +249,11 @@ export class Radial2DController extends Component {
 				renderer?.setView(preserveView.centerX + anchorDx, preserveView.centerY + anchorDy, preserveView.zoom);
 			}
 			this.applyActiveState();
-			if (shouldReveal) revealRootId = graph.rootId;
+			if (reveal) revealRootId = graph.rootId;
 		} finally {
 			renderer?.endRenderBatch();
 		}
-		if (shouldReveal && !this.disposed && token === this.rebuildToken) {
+		if (reveal && !this.disposed && token === this.rebuildToken) {
 			if (revealRootId !== null) renderer?.playRevealFromRoot(revealRootId, loadingText);
 			else renderer?.clearLoadingMask(true);
 		}
@@ -247,36 +277,31 @@ export class Radial2DController extends Component {
 	}
 
 	private registerVaultEvents(): void {
+		const invalidate = () => {
+			this.index.invalidate();
+			this.redrawSoon();
+		};
 		this.registerEvent(this.app.metadataCache.on('resolved', () => {
+			this.index.invalidate('links');
 			if (this.startupSettled) this.redrawSoon();
 		}));
-		this.registerEvent(this.app.vault.on('rename', this.redrawSoon));
-		this.registerEvent(this.app.vault.on('delete', this.redrawSoon));
-		this.registerEvent(this.app.vault.on('create', this.redrawSoon));
+		this.registerEvent(this.app.vault.on('rename', invalidate));
+		this.registerEvent(this.app.vault.on('delete', invalidate));
+		this.registerEvent(this.app.vault.on('create', invalidate));
 		this.registerEvent(
 			this.app.vault.on('modify', (file) => {
-				if (file instanceof TFile && file.extension === 'md') this.redrawSoon();
+				if (file instanceof TFile && file.extension === 'md') {
+					this.index.invalidate('links');
+					this.redrawSoon();
+				}
 			}),
 		);
 	}
 
 	private async waitForStartupReady(): Promise<void> {
-		await Promise.race([this.waitForMetadataResolved(), delay(1600)]);
+		await waitForMetadata(this.app.metadataCache, this);
+		if (this.disposed) return;
 		await animationFrames(2);
-	}
-
-	private waitForMetadataResolved(): Promise<void> {
-		const cache = this.app.metadataCache;
-		return new Promise((resolve) => {
-			let settled = false;
-			this.registerEvent(
-				cache.on('resolved', () => {
-					if (settled) return;
-					settled = true;
-					resolve();
-				}),
-			);
-		});
 	}
 
 	private bindRendererEvents(): void {
@@ -426,7 +451,8 @@ export class Radial2DController extends Component {
 	}
 
 	private resolveActiveState(): RadialActiveState {
-		if (!this.graph) return emptyActiveState();
+		const index = this.highlightIndex;
+		if (!this.graph || !index) return emptyActiveState();
 		const activeNode = this.hoverNodeId ?? this.selectedNodeId;
 		const activeLink = this.hoverLink ?? this.selectedLink;
 		const state = emptyActiveState();
@@ -438,8 +464,7 @@ export class Radial2DController extends Component {
 			state.labelNodes.add(nodeId);
 			if (pinned) state.pinnedNodeIds.add(nodeId);
 			if (hoverHighlightsNoteLinks(mode)) {
-				for (const edge of [...this.graph.linkEdges, ...this.graph.hoverLinkEdges]) {
-					if (edge.source !== nodeId && edge.target !== nodeId) continue;
+				for (const edge of index.incidentLinks.get(nodeId) ?? []) {
 					state.highlightedEdges.add(edge.id);
 					state.relatedNodes.add(edge.source);
 					state.relatedNodes.add(edge.target);
@@ -447,7 +472,7 @@ export class Radial2DController extends Component {
 					state.labelNodes.add(edge.target);
 				}
 			}
-			addHierarchyHighlights(this.graph, nodeId, normalizeHoverHighlightMode(mode), state);
+			addHierarchyHighlights(index, nodeId, normalizeHoverHighlightMode(mode), state);
 		};
 		const addLink = (edge: WorldEdge | null | undefined, pinned: boolean) => {
 			if (!edge) return;
@@ -762,8 +787,9 @@ export class Radial2DController extends Component {
 		}, this.t('view.theme.desc'));
 	}
 
-	openSearch(): void {
-		if (!this.index.ready) this.index.rebuild(this.radial());
+	async openSearch(): Promise<void> {
+		if (!this.index.ready && !await this.index.ensureReady(this.radial())) return;
+		if (this.disposed) return;
 		const items = [...this.index.nodes.values()].map((node) => {
 			const linkCount = Math.max(0, (node.linkCount || 0) + (node.backlinkCount || 0));
 			const noteCount = Math.max(0, node.noteCount || node.descendantCount || 0);
@@ -926,6 +952,7 @@ export class Radial2DController extends Component {
 		}, this.t('settings.hoverDesc'));
 		this.select(parent, this.t('control.hoverTargets'), radial.hoverTargetMode, hoverTargetOptions(this.settings.language, HOVER_TARGET_MODE_OPTIONS), (value) => {
 			radial.hoverTargetMode = normalizeHoverTargetMode(value);
+			this.renderer?.setLinkPickingEnabled(this.hoverTargets().links);
 			this.clearDisallowedHoverTargets();
 			this.saveSoon();
 			this.applyActiveState();
@@ -1465,114 +1492,12 @@ export class Radial2DController extends Component {
 		this.unload();
 		this.renderer?.dispose();
 		this.renderer = null;
+		this.graph = null;
+		this.highlightIndex = null;
+		this.layout = null;
+		this.layoutGraph = null;
+		this.index.dispose();
 		this.contentEl.removeClass('mwm-radial-mode');
 		this.contentEl.empty();
 	}
-}
-
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => {
-		window.setTimeout(resolve, ms);
-	});
-}
-
-function animationFrames(count: number): Promise<void> {
-	return new Promise((resolve) => {
-		let done = false;
-		let timer = 0;
-		const finish = () => {
-			if (done) return;
-			done = true;
-			window.clearTimeout(timer);
-			resolve();
-		};
-		timer = window.setTimeout(finish, 96);
-		let remaining = Math.max(0, count);
-		const step = () => {
-			if (done) return;
-			remaining--;
-			if (remaining <= 0) {
-				finish();
-				return;
-			}
-			window.requestAnimationFrame(step);
-		};
-		if (remaining <= 0) finish();
-		else window.requestAnimationFrame(step);
-	});
-}
-
-function addHierarchyHighlights(
-	graph: VisibleWorldGraph,
-	nodeId: string,
-	mode: ReturnType<typeof normalizeHoverHighlightMode>,
-	state: RadialActiveState,
-): void {
-	if (mode === 'none' || mode === 'note-links') return;
-	const parentByChild = new Map(graph.hierarchyEdges.map((edge) => [edge.target, edge]));
-	const childrenByParent = new Map<string, WorldEdge[]>();
-	for (const edge of graph.hierarchyEdges) {
-		const list = childrenByParent.get(edge.source);
-		if (list) list.push(edge);
-		else childrenByParent.set(edge.source, [edge]);
-	}
-	const addEdge = (edge: WorldEdge) => {
-		state.highlightedEdges.add(edge.id);
-		state.relatedNodes.add(edge.source);
-		state.relatedNodes.add(edge.target);
-		state.labelNodes.add(edge.source);
-		state.labelNodes.add(edge.target);
-	};
-	if (mode === 'hierarchy-parents' || mode === 'hierarchy-parents-direct' || mode === 'hierarchy-all' || mode === 'all-links') {
-		let edge = parentByChild.get(nodeId);
-		while (edge) {
-			addEdge(edge);
-			edge = parentByChild.get(edge.source);
-		}
-	}
-	if (mode === 'hierarchy-direct-children' || mode === 'hierarchy-parents-direct' || mode === 'hierarchy-all' || mode === 'all-links') {
-		for (const edge of childrenByParent.get(nodeId) ?? []) addEdge(edge);
-	}
-	if (mode === 'hierarchy-descendants' || mode === 'hierarchy-all' || mode === 'all-links') {
-		const stack = [...(childrenByParent.get(nodeId) ?? [])];
-		while (stack.length > 0) {
-			const edge = stack.pop();
-			if (!edge) continue;
-			addEdge(edge);
-			stack.push(...(childrenByParent.get(edge.target) ?? []));
-		}
-	}
-}
-
-function filterLegendGraph(graph: VisibleWorldGraph, hidden: Set<string>): VisibleWorldGraph {
-	if (hidden.size === 0) return graph;
-	const keepNode = (node: WorldNode) => {
-		if (node.id === graph.rootId && hidden.has('root')) return false;
-		if (node.externalProxy && hidden.has('outside-file')) return false;
-		if (node.type === 'external' && !node.externalProxy && hidden.has('outside')) return false;
-		if (node.type === 'unresolved' && hidden.has('missing')) return false;
-		if (node.type === 'folder' && node.representativeFile && hidden.has('folder-meta')) return false;
-		if (node.type === 'folder' && !node.representativeFile && hidden.has('folder')) return false;
-		if (node.type === 'note' && hidden.has('file')) return false;
-		return true;
-	};
-	const nodes = graph.nodes.filter(keepNode);
-	const ids = new Set(nodes.map((node) => node.id));
-	const keepEdge = (edge: WorldEdge) => ids.has(edge.source) && ids.has(edge.target);
-	const hierarchyEdges = hidden.has('tree') ? [] : graph.hierarchyEdges.filter(keepEdge);
-	const keepLinkEdge = (edge: WorldEdge) => {
-		if (!keepEdge(edge)) return false;
-		if (edge.externalCount && hidden.has('outside-link')) return false;
-		if (edge.unresolvedCount && hidden.has('dashed-link')) return false;
-		return Boolean(edge.externalCount) || !hidden.has('link');
-	};
-	const keepHoverLinkEdge = (edge: WorldEdge) => {
-		if (!keepEdge(edge)) return false;
-		if (edge.externalCount && hidden.has('outside-link')) return false;
-		if (edge.unresolvedCount && hidden.has('dashed-link')) return false;
-		return true;
-	};
-	const linkEdges = graph.linkEdges.filter(keepLinkEdge);
-	const hoverLinkEdges = graph.hoverLinkEdges.filter(keepHoverLinkEdge);
-	return { ...graph, nodes, nodesById: new Map(nodes.map((node) => [node.id, node])), hierarchyEdges, linkEdges, hoverLinkEdges };
 }

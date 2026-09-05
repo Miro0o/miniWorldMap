@@ -141,7 +141,7 @@ function materializeVisibleGraph(
 	let nodes = [...visible].map((id) => model.nodes.get(id)).filter((node): node is WorldNode => Boolean(node));
 	nodes.sort(compareWorldNodes);
 	const budget = applyNodeBudget(model, nodes, rootId, state, settings, focusId);
-	nodes = foldRepresentativeNodes(model, budget.nodes);
+	nodes = foldRepresentativeNodes(budget.nodes);
 
 	const nodeSet = new Set(nodes.map((node) => node.id));
 	const hierarchyEdges = model.hierarchyEdges.filter((edge) => nodeSet.has(edge.source) && nodeSet.has(edge.target));
@@ -287,14 +287,14 @@ function applyNodeBudget(
 	addDirectFileChildren(model, rootId, keep, limit, state.showCompleteRoot ? 128 : 64);
 	for (const node of candidates) {
 		if (keep.size >= limit) break;
-		addWithAncestors(model, node.id, keep, nodeById, limit);
+		addWithAncestors(node.id, keep, nodeById, limit);
 		if (node.type === 'folder') addDirectFileChildren(model, node.id, keep, limit, state.showCompleteRoot ? 18 : 8);
 	}
 	const kept = nodes.filter((node) => keep.has(node.id));
 	return { nodes: kept, hiddenNodeCount: Math.max(0, nodes.length - kept.length) };
 }
 
-function foldRepresentativeNodes(model: WorldModel, nodes: WorldNode[]): WorldNode[] {
+function foldRepresentativeNodes(nodes: WorldNode[]): WorldNode[] {
 	const visibleIds = new Set(nodes.map((node) => node.id));
 	return nodes.filter((node) => !node.isRepresentativeFile || !node.representativeFor || !visibleIds.has(node.representativeFor));
 }
@@ -333,7 +333,6 @@ function addAncestors(model: WorldModel, id: string, visible: Set<string>, stopI
 }
 
 function addWithAncestors(
-	model: WorldModel,
 	id: string,
 	keep: Set<string>,
 	nodeById: Map<string, WorldNode>,

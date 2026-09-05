@@ -113,8 +113,7 @@ export class MiniWorldMapView extends ItemView {
 				if (this.controller !== controller) return;
 				console.error('[Mini World Map] failed to start view', error);
 				new Notice('Mini World Map failed to load. Check the developer console for details.');
-				controller.dispose();
-				this.controller = null;
+				this.disposeController();
 				this.contentEl.empty();
 				this.contentEl.addClass('mini-world-map-view', 'galaxy-view-content');
 				this.showBootStatus('Mini World Map failed to start. Check the developer console.');
@@ -139,8 +138,8 @@ export class MiniWorldMapView extends ItemView {
 
 	private rebuild(): void {
 		this.clearInitRetry();
-		this.controller?.dispose();
-		this.controller = null;
+		this.clearBootStatus();
+		this.disposeController();
 		this.contentEl.empty();
 		this.contentEl.addClass('mini-world-map-view', 'galaxy-view-content');
 		this.showBootStatus(`Mini World Map rebuilding (${this.host.settings.viewMode})`);
@@ -150,9 +149,16 @@ export class MiniWorldMapView extends ItemView {
 	async onClose(): Promise<void> {
 		this.clearInitRetry();
 		this.clearBootStatus();
-		this.controller?.dispose();
-		this.controller = null;
+		this.disposeController();
 		this.contentEl.empty();
+	}
+
+	private disposeController(): void {
+		const controller = this.controller;
+		this.controller = null;
+		if (!controller) return;
+		controller.dispose();
+		this.removeChild(controller instanceof Radial2DController ? controller : controller.store);
 	}
 
 	private showBootStatus(text: string): void {

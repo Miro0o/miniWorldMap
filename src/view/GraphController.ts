@@ -1,4 +1,4 @@
-import type { App } from 'obsidian';
+import type { App, Debouncer } from 'obsidian';
 import { Menu, Notice, Platform, TFile, debounce, setIcon } from 'obsidian';
 import { Spherical, Vector3 } from 'three';
 import type { BenchResult } from '../types';
@@ -41,6 +41,8 @@ export class GraphController {
 	private panel: ControlPanel | null = null;
 
 	private rafId = 0;
+	private disposed = false;
+	private timers = new Set<number>();
 	private lastNow = 0;
 	private paused = false;
 	private visible = true;
@@ -55,7 +57,7 @@ export class GraphController {
 	private hudFrames: number[] = [];
 	private intersection: IntersectionObserver | null = null;
 	private disposeFns: (() => void)[] = [];
-	private saveSoon: () => void;
+	private saveSoon: Debouncer<[], void>;
 	private tier: QualityTier = TIERS.high;
 	private watchdogTripped = false;
 	private lowFpsChecks = 0;
@@ -81,9 +83,11 @@ export class GraphController {
 	}
 
 	async start(): Promise<void> {
+		if (this.disposed) return;
 		// Paint the view in its resolved theme before cache/index work can expose it.
 		this.applyPreset();
 		await this.store.ensureCacheReady();
+		if (this.disposed) return;
 		this.store.init(this.settings.showUnresolved, this.settings.showOrphans, () => this.onDataChanged());
 		this.store.rebuild(false);
 
@@ -128,6 +132,7 @@ export class GraphController {
 
 		this.lastNow = performance.now();
 		const loop = (now: number) => {
+			if (this.disposed) return;
 			const deltaS = Math.min((now - this.lastNow) / 1000, 0.1);
 			this.lastNow = now;
 			if (!this.paused) {
@@ -208,10 +213,10 @@ export class GraphController {
 		this.maskEl = this.contentEl.createDiv({ cls: 'gx-mask' });
 		this.maskEl.createDiv({ cls: 'gx-mask-text', text: this.tt('loading.3d') });
 		// 等几帧让首批渲染就绪，再揭幕拉出
-		window.setTimeout(() => {
+		this.scheduleTimeout(() => {
 			if (!this.maskEl) return;
 			this.maskEl.addClass('is-fading');
-			window.setTimeout(() => {
+			this.scheduleTimeout(() => {
 				this.maskEl?.remove();
 				this.maskEl = null;
 			}, 650);
@@ -408,6 +413,7 @@ export class GraphController {
 
 	private async importColors(notify: boolean): Promise<void> {
 		const groups = await readGraphColorGroups(this.app);
+		if (this.disposed) return;
 		if (!groups || groups.length === 0) {
 			if (notify) new Notice(this.tt('3d.importMissing'));
 			return;
@@ -532,7 +538,7 @@ export class GraphController {
 			const throttle = this.tier.hoverThrottleMs;
 			if (throttle === null || hoverPending) return; // 移动档：仅 tap，无 hover
 			hoverPending = true;
-			window.setTimeout(() => {
+			this.scheduleTimeout(() => {
 				hoverPending = false;
 				const renderer = this.renderer;
 				if (!renderer) return;
@@ -809,7 +815,21 @@ export class GraphController {
 
 	// ---------- 销毁合同 ----------
 
+	private scheduleTimeout(callback: () => void, delay: number): void {
+		const timer = window.setTimeout(() => {
+			this.timers.delete(timer);
+			if (!this.disposed) callback();
+		}, delay);
+		this.timers.add(timer);
+	}
+
 	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		this.saveSoon.run();
+		this.store.unload();
+		for (const timer of this.timers) window.clearTimeout(timer);
+		this.timers.clear();
 		window.cancelAnimationFrame(this.rafId);
 		this.intersection?.disconnect();
 		this.intersection = null;

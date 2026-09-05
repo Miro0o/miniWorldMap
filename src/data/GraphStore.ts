@@ -3,6 +3,7 @@ import { Component, debounce } from 'obsidian';
 import type { GraphData } from '../types';
 import { buildGraph } from './buildGraph';
 import { seedPosition, seedRadius } from './seed';
+import { waitForMetadata } from './waitForMetadata';
 
 /**
  * 唯一读 metadataCache 的模块。
@@ -31,16 +32,20 @@ export class GraphStore extends Component {
 		this.includeOrphans = includeOrphans;
 		this.onChanged = onChanged;
 		const rebuildSoon = debounce(() => this.rebuild(true), 800, true);
+		this.register(() => rebuildSoon.cancel());
 		this.registerEvent(this.app.metadataCache.on('resolved', rebuildSoon));
 		this.registerEvent(this.app.vault.on('rename', rebuildSoon));
 		this.registerEvent(this.app.vault.on('delete', rebuildSoon));
 	}
 
 	async ensureCacheReady(): Promise<void> {
-		if (Object.keys(this.app.metadataCache.resolvedLinks).length > 0) return;
-		await new Promise<void>((resolve) => {
-			this.registerEvent(this.app.metadataCache.on('resolved', () => resolve()));
-		});
+		await waitForMetadata(this.app.metadataCache, this);
+	}
+
+	onunload(): void {
+		this.onChanged = null;
+		this.data = { nodes: [], links: [] };
+		this.positions = new Float32Array(0);
 	}
 
 	setIncludeUnresolved(v: boolean): void {

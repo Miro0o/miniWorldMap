@@ -43,7 +43,7 @@ export class Twinkler {
 	private nextIn = 3;
 
 	constructor(
-		private geometry: BufferGeometry,
+		geometry: BufferGeometry,
 		private starCount: number,
 	) {
 		this.attr = geometry.getAttribute('color') as BufferAttribute;
