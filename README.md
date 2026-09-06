@@ -25,6 +25,7 @@ The goal is to complement Obsidian's native Graph View and conventional mind-map
 
 - **Two render modes:** switch between 2D radial rings and the 3D Galaxy map from the view panel or command palette.
 - **Atlas view:** browse folders and notes as a radial world map rooted at the whole vault or any folder.
+- **Folder notes:** a folder and its same-name child note share one 2D node, including emoji-decorated names such as `📚 Topic/Topic.md`. Original name matches take priority; emoji-insensitive matching requires a single matching child note.
 - **Focus view:** center the 2D map around the active note and show ancestors, siblings, outgoing links, and backlinks.
 - **3D Galaxy view:** fly through a Three.js graph with force layout, bloom, twinkle, orbit cruise, reveal animation, and search-to-fly navigation.
 - **Search:** open Mini World Map search from either mode and jump to notes, folders, unresolved links, or graph nodes.

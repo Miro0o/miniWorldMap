@@ -199,8 +199,17 @@ function identifyFolderRepresentatives(nodes: Map<string, WorldNode>, folderRepr
 	}
 	for (const folder of nodes.values()) {
 		if (folder.type !== 'folder' || folder.id === ROOT_ID) continue;
+		const childNotes = notesByParent.get(folder.id) ?? [];
 		const folderTitle = comparableTitle(folder.title);
-		const representative = (notesByParent.get(folder.id) ?? []).find((note) => comparableTitle(note.title) === folderTitle);
+		let representative = childNotes.find((note) => comparableTitle(note.title) === folderTitle);
+		if (!representative) {
+			const plainTitle = emojiInsensitiveTitle(folder.title);
+			if (plainTitle) {
+				const matches = childNotes.filter((note) => emojiInsensitiveTitle(note.title) === plainTitle);
+				// Keep the original match first; only fold an unambiguous emoji-insensitive fallback.
+				if (matches.length === 1) representative = matches[0];
+			}
+		}
 		if (!representative) continue;
 		folder.representativeFile = representative.id;
 		representative.isRepresentativeFile = true;
@@ -247,6 +256,14 @@ function computeFolderCounts(nodes: Map<string, WorldNode>): void {
 
 function comparableTitle(value: string): string {
 	return value.replace(/\.md$/i, '').trim().toLowerCase();
+}
+
+function emojiInsensitiveTitle(value: string): string {
+	return comparableTitle(value)
+		// Remove emoji and their sequence components, but preserve plain digits, # and *.
+		.replace(/[#*0-9]\uFE0F?\u20E3|[\p{Extended_Pictographic}\p{Regional_Indicator}\p{Emoji_Modifier}\u200D\uFE0E\uFE0F\u{E0020}-\u{E007F}]/gu, '')
+		.replace(/\s+/g, ' ')
+		.trim();
 }
 
 function pushMapArray<K, V>(map: Map<K, V[]>, key: K, value: V): void {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2
+
+- Merge emoji-decorated folders with matching child notes in the 2D map, such as `📚 Topic/Topic.md`, while preserving original display names and file paths.
+- Preserve original same-name matching priority and only use emoji-insensitive matches when a single child note matches.
+- Add regression coverage for emoji sequences, ambiguous names, folder-note links, focus, and node counts.
+
 ## 0.5.1
 
 - Address Obsidian review findings by using DOM and style helpers for theme sampling and window-scoped timers for metadata and worker tasks.
