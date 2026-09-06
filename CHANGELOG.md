@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0
+
+- Improve radial hierarchy spacing, branch separation, full-map framing, and label readability.
+- Add back/forward navigation with per-view pan and zoom, independent note-link and hierarchy hover controls, and clearer bilingual panels.
+- Move map computation into a worker, reuse unchanged vault snapshots and layouts, and accelerate picking and label placement.
+- Reuse node and road render buffers for unchanged maps while keeping theme, ring-guide, label, and reveal updates intact.
+- Preserve root and search framing when metadata refreshes overlap navigation, and prevent superseded failures from interrupting the current loading state.
+- Clean up cancelled pointer drags and ignore unrelated pointers and secondary-button releases.
+- Improve startup metadata handling, map statistics, and controller cleanup across 2D/3D switches.
+
 ## 0.2.7
 
 - Address Obsidian review warnings for console logging, DOM element creation, redundant type assertions, and CSS overrides.
