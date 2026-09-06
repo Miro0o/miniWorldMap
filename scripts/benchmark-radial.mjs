@@ -32,6 +32,7 @@ class BrowserWorker {
   terminate() { this.stopped = true; void this.worker?.terminate(); }
 }
 globalThis.Worker = BrowserWorker;
+globalThis.window = globalThis;
 
 async function bundle(name, sourceRoot) {
   const cacheFile = path.join(sourceRoot, 'world/RadialLayoutCache.ts');

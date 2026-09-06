@@ -20,16 +20,14 @@ function sampleObsidianBackground(scheme: ObsidianThemeScheme): string | null {
 	// workspace and exposes a transient host theme to other views and observers.
 	// Obsidian declares the variable mappings on `body`, so a plain div would
 	// inherit the already-resolved colors of the opposite scheme.
-	const probe = body.classList.contains(target) && !body.classList.contains(other) ? null : doc.createElement('body');
+	const probe = body.classList.contains(target) && !body.classList.contains(other) ? null : body.createEl('body');
 	const sample = probe ?? body;
 	try {
 		if (probe) {
 			probe.className = body.className;
 			probe.classList.remove(other);
 			probe.classList.add(target);
-			probe.style.cssText = body.style.cssText;
-			probe.style.setProperty('display', 'none', 'important');
-			body.appendChild(probe);
+			probe.setCssStyles({ cssText: `${body.style.cssText}; display: none !important;` });
 		}
 		const style = doc.defaultView?.getComputedStyle(sample) ?? getComputedStyle(sample);
 		return normalizeCssColor(style.getPropertyValue('--background-primary').trim() || style.backgroundColor, sample);

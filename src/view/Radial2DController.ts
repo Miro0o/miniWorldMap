@@ -920,7 +920,7 @@ export class Radial2DController extends Component {
 
 	private renderViewPage(parent: HTMLElement): void {
 		const row = parent.createDiv({ cls: 'galaxy-panel-row' });
-		this.button(row, this.t('common.search'), () => this.openSearch(), false, this.t('view.search.desc'));
+		this.button(row, this.t('common.search'), () => void this.openSearch(), false, this.t('view.search.desc'));
 		this.button(row, this.t('common.recenter'), () => this.centerCurrentView(), false, this.t('view.fit.desc'));
 		this.button(row, this.t('common.rebuild'), () => this.rebuild('manual'), false, this.t('view.refresh.desc'));
 		const row2 = parent.createDiv({ cls: 'galaxy-panel-row' });

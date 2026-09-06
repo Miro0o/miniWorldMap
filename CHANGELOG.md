@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1
+
+- Address Obsidian review findings by using DOM and style helpers for theme sampling and window-scoped timers for metadata and worker tasks.
+- Explicitly mark asynchronous search calls and remove the control-character regex while preserving label width calculations.
+- Keep worker tests and the local benchmark compatible with the browser timer API.
+
 ## 0.5.0
 
 - Improve radial hierarchy spacing, branch separation, full-map framing, and label readability.

@@ -75,7 +75,7 @@ export default class MiniWorldMapPlugin extends Plugin {
 				void this.activateView().then((view) => {
 					const controller = view?.controller;
 					if (controller && 'openSearch' in controller && typeof controller.openSearch === 'function') {
-						controller.openSearch();
+						void controller.openSearch();
 					} else {
 						new Notice(t(this.settings.language, 'notice.openToSearch'));
 					}

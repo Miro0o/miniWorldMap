@@ -37,7 +37,7 @@ export function radialLabelBounds(title: string, x: number, y: number, fontSize:
 	let lines = 1;
 	// Match normal word wrapping, with anywhere wrapping for names wider than a line.
 	for (const word of title.split(/\s+/u)) {
-		const widths = Array.from(word, (char) => fontSize * (/[^\u0000-\u00ff]|[MW@%]/u.test(char) ? 1 : 0.65));
+		const widths = Array.from(word, (char) => fontSize * (char.charCodeAt(0) > 0xff || /[MW@%]/u.test(char) ? 1 : 0.65));
 		const wordWidth = widths.reduce((sum, width) => sum + width, 0);
 		const space = lineWidth > 0 ? fontSize * 0.4 : 0;
 		if (lineWidth > 0 && lineWidth + space + wordWidth > maxWidth) {

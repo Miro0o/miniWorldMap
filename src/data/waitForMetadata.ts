@@ -8,12 +8,12 @@ export function waitForMetadata(cache: MetadataCache, owner: Component, timeoutM
 		const finish = () => {
 			if (settled) return;
 			settled = true;
-			clearTimeout(timer);
+			window.clearTimeout(timer);
 			cache.offref(ref);
 			resolve();
 		};
 		const ref = cache.on('resolved', finish);
-		const timer = setTimeout(finish, timeoutMs);
+		const timer = window.setTimeout(finish, timeoutMs);
 		owner.register(finish);
 	});
 }

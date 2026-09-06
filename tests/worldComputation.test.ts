@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Worker as NodeWorker } from 'node:worker_threads';
 import workerSource from 'worker:../src/world/worldWorker.ts';
 import { WorldMapComputation } from '../src/world/WorldMapComputation';
@@ -27,6 +27,7 @@ class FakeWorker {
 	constructor() { FakeWorker.instances.push(this); }
 }
 
+beforeEach(() => vi.stubGlobal('window', globalThis));
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); FakeWorker.instances = []; });
 
 describe('background world computation', () => {

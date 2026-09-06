@@ -7,7 +7,7 @@ import { RadialLayoutCache } from './RadialLayoutCache';
 interface PendingTask {
 	resolve(result: ComputationResult | null): void;
 	reject(error: Error): void;
-	timer: ReturnType<typeof setTimeout>;
+	timer: number;
 }
 
 /** One worker per view; failure falls back to the identical local computation. */
@@ -52,7 +52,7 @@ export class WorldMapComputation {
 			if (worker) {
 				return await new Promise<ComputationResult | null>((resolve, reject) => {
 					const id = ++this.nextId;
-					const timer = setTimeout(() => this.failWorker(new Error('World map worker timed out')), 30000);
+					const timer = window.setTimeout(() => this.failWorker(new Error('World map worker timed out')), 30000);
 					this.pending.set(id, { resolve, reject, timer });
 					try {
 						worker.postMessage({ ...task, id });
@@ -81,7 +81,7 @@ export class WorldMapComputation {
 				const response = event.data;
 				const task = this.pending.get(response.id);
 				if (!task) return;
-				clearTimeout(task.timer);
+				window.clearTimeout(task.timer);
 				this.pending.delete(response.id);
 				if ('error' in response) task.reject(new Error(response.error));
 				else task.resolve(response.result);
@@ -105,7 +105,7 @@ export class WorldMapComputation {
 		this.worker?.terminate();
 		this.worker = null;
 		for (const task of this.pending.values()) {
-			clearTimeout(task.timer);
+			window.clearTimeout(task.timer);
 			task.reject(error);
 		}
 		this.pending.clear();
@@ -117,7 +117,7 @@ export class WorldMapComputation {
 		this.worker?.terminate();
 		this.worker = null;
 		for (const task of this.pending.values()) {
-			clearTimeout(task.timer);
+			window.clearTimeout(task.timer);
 			task.resolve(null);
 		}
 		this.pending.clear();
