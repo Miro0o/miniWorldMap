@@ -1567,6 +1567,11 @@
 	height: 16px;
 }
 
+.mwm-floating-button:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
 .mwm-radial-host.is-radial-preparing .mwm-radial-canvas,
 .mwm-radial-host.is-radial-preparing .mwm-radial-labels {
 	opacity: 0;

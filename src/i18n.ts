@@ -71,6 +71,8 @@ const STRINGS: Record<string, Record<Language, string>> = {
 	'common.resetDefaults': { en: 'Reset defaults', zh: '重置默认' },
 
 	'view.atlas': { en: 'Root map', zh: '当前根地图' },
+	'view.back': { en: 'Back to previous map view', zh: '后退到上一个地图视图' },
+	'view.forward': { en: 'Forward to next map view', zh: '前进到下一个地图视图' },
 	'view.focus': { en: 'Active note', zh: '当前笔记' },
 	'view.vaultRoot': { en: 'Vault map', zh: '整个库地图' },
 	'view.completeMap': { en: 'Full current root', zh: '完整当前根' },

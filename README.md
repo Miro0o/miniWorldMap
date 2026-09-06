@@ -59,6 +59,7 @@ Useful 2D interactions:
 - Click a node or link to pin the highlight and inspect it in the side panel.
 - Double-click a note to open it.
 - Double-click a folder to make it the atlas root.
+- Use the arrow buttons beside the language button to go back or forward through 2D map views, restoring each view's pan and zoom. Re-entering a map clears the previous node or link selection. Opening a new map after going back replaces the forward history. Up to 100 views are remembered while the 2D view stays open; panning, zooming and display adjustments update the current view without adding history entries.
 - Use **Full current root** to expand every hierarchy level and available note link without jumping back to the vault root.
 - Right-click a node for node actions.
 - Pan and zoom the canvas to move through large maps.

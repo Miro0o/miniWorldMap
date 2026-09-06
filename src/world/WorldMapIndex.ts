@@ -31,6 +31,10 @@ export class WorldMapIndex {
 		return this.model !== null;
 	}
 
+	get needsRefresh(): boolean {
+		return this.dirty;
+	}
+
 	get nodes(): Map<string, WorldNode> {
 		return this.model?.nodes ?? new Map();
 	}

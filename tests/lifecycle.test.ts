@@ -40,12 +40,13 @@ describe('map lifecycle', () => {
 		const setView = vi.fn();
 		const next = { x: 50, y: 70, siblingSpacing: 200 };
 		const controller = Object.assign(Object.create(Radial2DController.prototype), {
+			rebuildToken: 0, beginNavigation() {},
 			state: {}, graph: { rootId: 'Old' },
 			layout: { positions: new Map([['Old', { siblingSpacing: 2000 }]]) },
 			renderer: { getView: () => ({ zoom }), nodePoint: () => next, setView },
 			leaveCompleteMap() {}, clearMapSelection() {},
-			async queueRebuild() { controller.layout = { positions: new Map([['New', next]]), readableZoom: 0.05 }; },
-		}) as { layout: unknown; state: { rootPath: string }; openSearchNodeAsRoot(id: string): Promise<void> };
+			async queueRebuild() { controller.rebuildToken++; controller.layout = { positions: new Map([['New', next]]), readableZoom: 0.05 }; },
+		}) as { rebuildToken: number; layout: unknown; state: { rootPath: string }; openSearchNodeAsRoot(id: string): Promise<void> };
 		await controller.openSearchNodeAsRoot('New');
 		expect(controller.state.rootPath).toBe('New');
 		expect(setView).toHaveBeenCalledWith(50, 70, zoom * 10);

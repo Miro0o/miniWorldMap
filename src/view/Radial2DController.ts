@@ -47,6 +47,7 @@ import type { RadialLayoutCache } from '../world/RadialLayoutCache';
 import { defaultVisibleGraphState } from '../world/visibleGraph';
 import { NodeSearchModal } from './SearchModal';
 import { radialNodeLegendLabelKey } from './radialNodeLegend';
+import { RadialViewHistory, type RadialViewEntry } from './RadialViewHistory';
 import { addHierarchyHighlights, createHighlightIndex, type HighlightIndex } from './radialHighlights';
 import { waitForMetadata } from '../data/waitForMetadata';
 import { animationFrames, filterLegendGraph } from './radialViewHelpers';
@@ -94,6 +95,10 @@ export class Radial2DController extends Component {
 	private panelBody: HTMLElement | null = null;
 	private statsEl: HTMLElement | null = null;
 	private languageButton: HTMLButtonElement | null = null;
+	private backButton: HTMLButtonElement | null = null;
+	private forwardButton: HTMLButtonElement | null = null;
+	private history = new RadialViewHistory();
+	private pendingNavigation: { type: 'push' } | { type: 'restore'; direction: -1 | 1; entry: RadialViewEntry } | null = null;
 	private activePanelPage: 'inspect' | 'pins' | 'view' | 'controls' | 'defaults' = 'view';
 	private selectedNodeId: string | null = null;
 	private selectedLink: WorldEdge | null = null;
@@ -145,6 +150,7 @@ export class Radial2DController extends Component {
 		if (this.panelBody) this.panelBody.scrollTop = scrollTop;
 		this.languageButton?.setAttr('title', this.t('language'));
 		this.languageButton?.setAttr('aria-label', this.t('language'));
+		this.updateHistoryControls();
 	}
 
 	async start(): Promise<void> {
@@ -160,7 +166,11 @@ export class Radial2DController extends Component {
 		await this.waitForStartupReady();
 		if (this.disposed) return;
 		await this.queueRebuild('start');
-		if (!this.disposed) this.startupSettled = true;
+		if (this.disposed) return;
+		this.startupSettled = true;
+		// Metadata can resolve while the first layout is running. Its event only
+		// invalidates the index during startup, so catch up after that layout.
+		if (this.index.needsRefresh) this.redrawSoon();
 	}
 
 	onunload(): void {
@@ -199,13 +209,25 @@ export class Radial2DController extends Component {
 
 	private async queueRebuild(reason: string): Promise<void> {
 		const token = ++this.rebuildToken;
-		await this.rebuildNow(reason, token);
+		try {
+			await this.rebuildNow(reason, token);
+		} catch (error) {
+			if (!this.disposed && token === this.rebuildToken && this.pendingNavigation) {
+				const previous = this.history.current;
+				if (previous) this.restoreHistoryState(previous);
+				this.pendingNavigation = null;
+				this.needsFit = false;
+				this.revealPending = false;
+				this.updateHistoryControls();
+			}
+			throw error;
+		}
 	}
 
 	private async rebuildNow(reason: string, token: number): Promise<void> {
 		if (this.disposed || token !== this.rebuildToken) return;
 		const radial = { ...this.radial() };
-		const shouldReveal = ['start', 'manual', 'root', 'focus', 'atlas', 'complete'].includes(reason);
+		const shouldReveal = ['start', 'manual', 'root', 'focus', 'atlas', 'complete', 'history'].includes(reason);
 		const loadingText = this.t('loading.radial');
 		if (shouldReveal) {
 			this.revealPending = true;
@@ -253,12 +275,17 @@ export class Radial2DController extends Component {
 		const reveal = this.revealPending;
 		this.revealPending = false;
 		const renderer = this.renderer;
+		const navigation = this.pendingNavigation;
+		const restoredView = navigation?.type === 'restore' ? navigation.entry.view : null;
 		let revealRootId: string | null = null;
 		renderer?.beginRenderBatch();
 		try {
 			renderer?.setData(graph, this.layout, radial.labelVisibility, radial.showRingGuides);
-			this.resizeRenderer(!preserveView);
-			if (preserveView) {
+			this.resizeRenderer(!preserveView && !restoredView);
+			if (restoredView) {
+				renderer?.setView(restoredView.centerX, restoredView.centerY, restoredView.zoom);
+				this.needsFit = false;
+			} else if (preserveView) {
 				const nextAnchorPoint = preserveAnchorId !== null ? (this.layout.positions.get(preserveAnchorId) ?? this.layout.positions.get(ROOT_ID) ?? null) : null;
 				const anchorDx = nextAnchorPoint && preserveAnchorPoint ? nextAnchorPoint.x - preserveAnchorPoint.x : 0;
 				const anchorDy = nextAnchorPoint && preserveAnchorPoint ? nextAnchorPoint.y - preserveAnchorPoint.y : 0;
@@ -269,11 +296,69 @@ export class Radial2DController extends Component {
 		} finally {
 			renderer?.endRenderBatch();
 		}
+		if (navigation?.type === 'restore') this.history.go(navigation.direction);
+		this.pendingNavigation = null;
+		this.recordHistory(navigation?.type === 'push');
 		if (reveal && !this.disposed && token === this.rebuildToken) {
 			if (revealRootId !== null) renderer?.playRevealFromRoot(revealRootId, loadingText);
 			else renderer?.clearLoadingMask(true);
 		}
 		this.renderPanel();
+	}
+
+	private recordHistory(push = false): void {
+		const view = this.renderer?.getView();
+		if (view && this.graph) {
+			const entry: RadialViewEntry = {
+				state: {
+					...this.state,
+					hiddenLegendItems: this.state.hiddenLegendItems.slice(),
+					selectedNodeId: null,
+					selectedLink: null,
+				},
+				view,
+			};
+			if (push) this.history.push(entry);
+			else this.history.replaceCurrent(entry);
+		}
+		this.updateHistoryControls();
+	}
+
+	private beginNavigation(): void {
+		// Keep the last completed view if another navigation is still loading.
+		if (!this.pendingNavigation) this.recordHistory();
+		this.pendingNavigation = { type: 'push' };
+		this.updateHistoryControls();
+	}
+
+	private navigateHistory(direction: -1 | 1): void {
+		if (this.disposed || this.pendingNavigation) return;
+		const entry = this.history.peek(direction);
+		if (!entry) return;
+		this.recordHistory();
+		this.restoreHistoryState(entry);
+		this.pendingNavigation = { type: 'restore', direction, entry };
+		this.needsFit = false;
+		this.updateHistoryControls();
+		this.rebuild('history');
+	}
+
+	private restoreHistoryState(entry: RadialViewEntry): void {
+		this.state = { ...entry.state, hiddenLegendItems: entry.state.hiddenLegendItems.slice() };
+		// Re-enter a map without reviving a previous selection or hover highlight.
+		this.clearMapSelection();
+	}
+
+	private updateHistoryControls(): void {
+		for (const [button, key, available] of [
+			[this.backButton, 'view.back', this.history.canGoBack],
+			[this.forwardButton, 'view.forward', this.history.canGoForward],
+		] as const) {
+			if (!button) continue;
+			button.disabled = !available || this.pendingNavigation !== null;
+			button.setAttr('title', this.t(key));
+			button.setAttr('aria-label', this.t(key));
+		}
 	}
 
 	private radial(): RadialSettings {
@@ -549,8 +634,12 @@ export class Radial2DController extends Component {
 		const graph = this.graph;
 		this.panelBody.empty();
 		if (this.statsEl) {
-			this.statsEl.setText(this.t('stats.counts', { nodes: graph?.nodes.length ?? 0, links: graph?.linkEdges.length ?? 0 }));
-			this.statsEl.setAttr('title', this.t('stats.counts.desc', { ...renderedNodeCounts(graph), hierarchy: graph?.hierarchyEdges.length ?? 0, links: graph?.linkEdges.length ?? 0 }));
+			this.statsEl.setText(graph
+				? this.t('stats.counts', { nodes: graph.nodes.length, links: graph.linkEdges.length })
+				: this.t('loading.radial'));
+			this.statsEl.setAttr('title', graph
+				? this.t('stats.counts.desc', { ...renderedNodeCounts(graph), hierarchy: graph.hierarchyEdges.length, links: graph.linkEdges.length })
+				: this.t('loading.radial'));
 		}
 		const modeSwitch = this.panelBody.createDiv({ cls: 'mwm-mode-switch' });
 		modeSwitch.createDiv({ cls: 'mwm-mode-switch-label', text: this.t('view.mode') });
@@ -863,6 +952,7 @@ export class Radial2DController extends Component {
 	}
 
 	private async openSearchNodeAsRoot(visualId: string): Promise<void> {
+		this.beginNavigation();
 		const currentZoom = this.renderer?.getView().zoom ?? null;
 		const previousSpacing = this.layout?.positions.get(this.graph?.rootId ?? ROOT_ID)?.siblingSpacing;
 		this.leaveCompleteMap();
@@ -872,7 +962,9 @@ export class Radial2DController extends Component {
 		this.state.rootPath = visualId;
 		this.state.search = '';
 		this.needsFit = false;
+		const token = this.rebuildToken + 1;
 		await this.queueRebuild('root');
+		if (this.disposed || token !== this.rebuildToken) return;
 		const point = this.renderer?.nodePoint(visualId);
 		if (point && currentZoom !== null) {
 			// A new root has its own capacity scale. Preserve the visual spacing
@@ -888,6 +980,7 @@ export class Radial2DController extends Component {
 	}
 
 	private showCompleteMap(): void {
+		this.beginNavigation();
 		const currentRoot = this.graph?.rootId ?? this.state.rootPath ?? ROOT_ID;
 		this.clearMapSelection();
 		this.state.showCompleteRoot = true;
@@ -1132,6 +1225,14 @@ export class Radial2DController extends Component {
 		const host = this.canvasHost;
 		if (!host) return;
 		const controls = host.createDiv({ cls: 'mwm-floating-controls' });
+		for (const [direction, icon] of [[-1, 'arrow-left'], [1, 'arrow-right']] as const) {
+			const button = controls.createEl('button', { cls: 'mwm-floating-button', attr: { type: 'button' } });
+			setIcon(button, icon);
+			button.addEventListener('click', () => this.navigateHistory(direction));
+			if (direction === -1) this.backButton = button;
+			else this.forwardButton = button;
+		}
+		this.updateHistoryControls();
 		const languageButton = controls.createEl('button', {
 			cls: 'mwm-floating-button',
 			attr: { type: 'button', title: this.t('language'), 'aria-label': this.t('language') },
@@ -1424,6 +1525,7 @@ export class Radial2DController extends Component {
 	}
 
 	private resetToAtlas(): void {
+		this.beginNavigation();
 		this.leaveCompleteMap();
 		this.clearMapSelection();
 		this.state.mode = 'atlas';
@@ -1434,6 +1536,7 @@ export class Radial2DController extends Component {
 	}
 
 	private resetToRoot(): void {
+		this.beginNavigation();
 		this.leaveCompleteMap();
 		this.clearMapSelection();
 		this.state.mode = 'atlas';
@@ -1453,6 +1556,7 @@ export class Radial2DController extends Component {
 	}
 
 	private useAsRoot(nodeId: string): void {
+		this.beginNavigation();
 		this.leaveCompleteMap();
 		this.clearMapSelection();
 		this.state.mode = 'atlas';
@@ -1469,6 +1573,7 @@ export class Radial2DController extends Component {
 	}
 
 	private focusNote(nodeId: string): void {
+		this.beginNavigation();
 		this.leaveCompleteMap();
 		this.clearMapSelection();
 		this.state.mode = 'focus';
