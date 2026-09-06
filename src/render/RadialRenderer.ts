@@ -178,6 +178,7 @@ export class RadialRenderer {
 	private showRingGuides = false;
 	private revealDepthLimit = Number.POSITIVE_INFINITY;
 	private currentLabelVisibility: LabelVisibility = 'auto';
+	private sceneAppearance: { scheme: RadialResolvedScheme; showRingGuides: boolean; revealDepthLimit: number; pixelRatio: number } | null = null;
 
 	constructor(private container: HTMLElement) {
 		this.container.addClass('is-radial-preparing');
@@ -217,7 +218,15 @@ export class RadialRenderer {
 		this.showRingGuides = showRingGuides;
 		this.currentLabelVisibility = labelVisibility;
 		if (geometryChanged) this.rebuildHitIndexes(graph, layout);
-		this.rebuildSceneObjects(labelVisibility);
+		const appearance = this.sceneAppearance;
+		if (geometryChanged || !appearance || appearance.scheme !== this.scheme
+			|| appearance.showRingGuides !== showRingGuides || appearance.revealDepthLimit !== this.revealDepthLimit
+			|| appearance.pixelRatio !== Math.min(window.devicePixelRatio || 1, 2)) {
+			this.rebuildSceneObjects(labelVisibility);
+		} else {
+			// Unchanged metadata must not dispose and upload the same buffers again.
+			this.setActive(this.active, labelVisibility);
+		}
 	}
 
 	private rebuildHitIndexes(graph: VisibleWorldGraph, layout: RadialLayout): void {
@@ -274,6 +283,8 @@ export class RadialRenderer {
 		}
 		this.buildNodes(this.graph, this.layout);
 		this.setActive(this.active, labelVisibility);
+		this.sceneAppearance = { scheme: this.scheme, showRingGuides: this.showRingGuides,
+			revealDepthLimit: this.revealDepthLimit, pixelRatio: Math.min(window.devicePixelRatio || 1, 2) };
 	}
 
 	resize(width: number, height: number): void {

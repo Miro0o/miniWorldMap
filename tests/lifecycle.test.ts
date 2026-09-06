@@ -36,22 +36,6 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('map lifecycle', () => {
-	it.each([0.002, 0.2])('preserves the chosen zoom scale when search switches to a differently sized root at zoom %s', async (zoom) => {
-		const setView = vi.fn();
-		const next = { x: 50, y: 70, siblingSpacing: 200 };
-		const controller = Object.assign(Object.create(Radial2DController.prototype), {
-			rebuildToken: 0, beginNavigation() {},
-			state: {}, graph: { rootId: 'Old' },
-			layout: { positions: new Map([['Old', { siblingSpacing: 2000 }]]) },
-			renderer: { getView: () => ({ zoom }), nodePoint: () => next, setView },
-			leaveCompleteMap() {}, clearMapSelection() {},
-			async queueRebuild() { controller.rebuildToken++; controller.layout = { positions: new Map([['New', next]]), readableZoom: 0.05 }; },
-		}) as { rebuildToken: number; layout: unknown; state: { rootPath: string }; openSearchNodeAsRoot(id: string): Promise<void> };
-		await controller.openSearchNodeAsRoot('New');
-		expect(controller.state.rootPath).toBe('New');
-		expect(setView).toHaveBeenCalledWith(50, 70, zoom * 10);
-	});
-
 	it('uses the layout zoom limit for wheel events and preserves the point beneath the cursor', () => {
 		const listeners = new Map<string, (event: WheelEvent) => void>();
 		const view = { centerX: 5e9, centerY: 5e9, zoom: 1e-5 };

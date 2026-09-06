@@ -98,7 +98,10 @@ export class Radial2DController extends Component {
 	private backButton: HTMLButtonElement | null = null;
 	private forwardButton: HTMLButtonElement | null = null;
 	private history = new RadialViewHistory();
-	private pendingNavigation: { type: 'push' } | { type: 'restore'; direction: -1 | 1; entry: RadialViewEntry } | null = null;
+	private pendingNavigation:
+		| { type: 'push'; searchView?: { nodeId: string; zoom: number; spacing?: number } }
+		| { type: 'restore'; direction: -1 | 1; entry: RadialViewEntry }
+		| null = null;
 	private activePanelPage: 'inspect' | 'pins' | 'view' | 'controls' | 'defaults' = 'view';
 	private selectedNodeId: string | null = null;
 	private selectedLink: WorldEdge | null = null;
@@ -202,7 +205,6 @@ export class Radial2DController extends Component {
 	rebuild(reason: string): void {
 		void this.queueRebuild(reason).catch((error: unknown) => {
 			if (this.disposed) return;
-			this.renderer?.clearLoadingMask(true);
 			console.error('[mini-world-map] Rebuild failed', error);
 		});
 	}
@@ -212,7 +214,9 @@ export class Radial2DController extends Component {
 		try {
 			await this.rebuildNow(reason, token);
 		} catch (error) {
-			if (!this.disposed && token === this.rebuildToken && this.pendingNavigation) {
+			if (this.disposed || token !== this.rebuildToken) return;
+			this.renderer?.clearLoadingMask(true);
+			if (this.pendingNavigation) {
 				const previous = this.history.current;
 				if (previous) this.restoreHistoryState(previous);
 				this.pendingNavigation = null;
@@ -264,7 +268,9 @@ export class Radial2DController extends Component {
 		}
 		if (!layout || this.disposed || token !== this.rebuildToken) return;
 		// Capture the current camera after computation so panning during a rebuild survives.
-		const preserveView = this.shouldPreserveView(reason) ? this.renderer?.getView() : null;
+		// A metadata refresh can finish an in-flight navigation or first load.
+		// Only an already displayed map without pending navigation owns this camera.
+		const preserveView = this.graph && !this.pendingNavigation && this.shouldPreserveView(reason) ? this.renderer?.getView() : null;
 		const preserveAnchorId = preserveView ? (this.graph?.rootId ?? this.state.rootPath ?? ROOT_ID) : null;
 		const preserveAnchorPoint = preserveAnchorId !== null ? (this.layout?.positions.get(preserveAnchorId) ?? this.layout?.positions.get(ROOT_ID) ?? null) : null;
 		this.graph = graph;
@@ -290,6 +296,15 @@ export class Radial2DController extends Component {
 				const anchorDx = nextAnchorPoint && preserveAnchorPoint ? nextAnchorPoint.x - preserveAnchorPoint.x : 0;
 				const anchorDy = nextAnchorPoint && preserveAnchorPoint ? nextAnchorPoint.y - preserveAnchorPoint.y : 0;
 				renderer?.setView(preserveView.centerX + anchorDx, preserveView.centerY + anchorDy, preserveView.zoom);
+			}
+			if (navigation?.type === 'push' && navigation.searchView) {
+				const { nodeId, zoom, spacing } = navigation.searchView;
+				const point = this.layout.positions.get(nodeId);
+				if (point) {
+					// Carry search framing with the navigation so metadata can finish it.
+					const ratio = spacing && point.siblingSpacing ? spacing / point.siblingSpacing : 1;
+					renderer?.setView(point.x, point.y, zoom * ratio);
+				}
 			}
 			this.applyActiveState();
 			if (reveal) revealRootId = graph.rootId;
@@ -437,7 +452,7 @@ export class Radial2DController extends Component {
 			renderer.setView(afterCenterX, afterCenterY, zoom);
 		};
 		const onPointerDown = (event: PointerEvent) => {
-			if (event.button !== 0) return;
+			if (event.button !== 0 || this.drag) return;
 			canvas.focus();
 			const view = this.renderer?.getView();
 			if (!view) return;
@@ -447,6 +462,7 @@ export class Radial2DController extends Component {
 		const onPointerMove = (event: PointerEvent) => {
 			const rect = canvas.getBoundingClientRect();
 			if (this.drag) {
+				if (event.pointerId !== this.drag.pointerId) return;
 				const renderer = this.renderer;
 				if (!renderer) return;
 				const dx = event.clientX - this.drag.startX;
@@ -459,7 +475,8 @@ export class Radial2DController extends Component {
 			this.updateHover(event.clientX - rect.left, event.clientY - rect.top);
 		};
 		const onPointerUp = (event: PointerEvent) => {
-			const wasDrag = this.drag?.moved ?? false;
+			if (!this.drag || event.pointerId !== this.drag.pointerId) return;
+			const wasDrag = this.drag.moved;
 			if (dragFrame !== 0) window.cancelAnimationFrame(dragFrame);
 			flushDragView();
 			this.drag = null;
@@ -467,6 +484,13 @@ export class Radial2DController extends Component {
 			if (wasDrag) return;
 			const rect = canvas.getBoundingClientRect();
 			this.activateAt(event.clientX - rect.left, event.clientY - rect.top, event);
+		};
+		const onPointerCancel = (event: PointerEvent) => {
+			if (!this.drag || event.pointerId !== this.drag.pointerId) return;
+			if (dragFrame !== 0) window.cancelAnimationFrame(dragFrame);
+			dragFrame = 0;
+			pendingDragView = null;
+			this.drag = null;
 		};
 		const onLeave = () => {
 			if (this.drag) return;
@@ -497,16 +521,21 @@ export class Radial2DController extends Component {
 		canvas.addEventListener('pointerdown', onPointerDown);
 		canvas.addEventListener('pointermove', onPointerMove);
 		canvas.addEventListener('pointerup', onPointerUp);
+		canvas.addEventListener('pointercancel', onPointerCancel);
+		canvas.addEventListener('lostpointercapture', onPointerCancel);
 		canvas.addEventListener('pointerleave', onLeave);
 		canvas.addEventListener('dblclick', onDblClick);
 		canvas.addEventListener('contextmenu', onContextMenu);
 		this.register(() => {
 			if (dragFrame !== 0) window.cancelAnimationFrame(dragFrame);
 			pendingDragView = null;
+			this.drag = null;
 			canvas.removeEventListener('wheel', onWheel);
 			canvas.removeEventListener('pointerdown', onPointerDown);
 			canvas.removeEventListener('pointermove', onPointerMove);
 			canvas.removeEventListener('pointerup', onPointerUp);
+			canvas.removeEventListener('pointercancel', onPointerCancel);
+			canvas.removeEventListener('lostpointercapture', onPointerCancel);
 			canvas.removeEventListener('pointerleave', onLeave);
 			canvas.removeEventListener('dblclick', onDblClick);
 			canvas.removeEventListener('contextmenu', onContextMenu);
@@ -955,6 +984,9 @@ export class Radial2DController extends Component {
 		this.beginNavigation();
 		const currentZoom = this.renderer?.getView().zoom ?? null;
 		const previousSpacing = this.layout?.positions.get(this.graph?.rootId ?? ROOT_ID)?.siblingSpacing;
+		if (currentZoom !== null) {
+			this.pendingNavigation = { type: 'push', searchView: { nodeId: visualId, zoom: currentZoom, spacing: previousSpacing } };
+		}
 		this.leaveCompleteMap();
 		this.clearMapSelection();
 		this.state.mode = 'atlas';
@@ -962,16 +994,7 @@ export class Radial2DController extends Component {
 		this.state.rootPath = visualId;
 		this.state.search = '';
 		this.needsFit = false;
-		const token = this.rebuildToken + 1;
 		await this.queueRebuild('root');
-		if (this.disposed || token !== this.rebuildToken) return;
-		const point = this.renderer?.nodePoint(visualId);
-		if (point && currentZoom !== null) {
-			// A new root has its own capacity scale. Preserve the visual spacing
-			// instead of reusing a zoom tied to the previous graph's world units.
-			const ratio = previousSpacing && point.siblingSpacing ? previousSpacing / point.siblingSpacing : 1;
-			this.renderer?.setView(point.x, point.y, currentZoom * ratio);
-		}
 	}
 
 	private centerCurrentView(): void {

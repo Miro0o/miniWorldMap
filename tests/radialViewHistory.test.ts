@@ -112,6 +112,16 @@ async function fixture() {
 }
 
 describe('2D history integration', () => {
+	it.each([0.002, 0.2])('preserves visual spacing and records search framing at zoom %s', async (zoom) => {
+		const { internals, view, settle } = await fixture();
+		Object.assign(view, { zoom });
+		const spacing = internals.layout.positions.get('')!.siblingSpacing!;
+		const search = internals.openSearchNodeAsRoot('A'); await settle(); await search;
+		const point = internals.layout.positions.get('A')!;
+		expect(view).toEqual({ centerX: point.x, centerY: point.y, zoom: zoom * (spacing / point.siblingSpacing!) });
+		expect(internals.history.current?.view).toEqual(view);
+	});
+
 	it('restores the viewport and limits with no old selection when navigating, going back or going forward', async () => {
 		const { internals, renderer, view, navigate, go } = await fixture();
 		const expectNoSelection = () => {
@@ -217,6 +227,59 @@ describe('2D history integration', () => {
 		expect(view).toEqual(saved);
 		expect(internals.history.canGoBack).toBe(false);
 		expect(internals.history.canGoForward).toBe(true);
+	});
+
+	it('fits a new root when a metadata rebuild supersedes its pending navigation', async () => {
+		const { internals, view, renderer, settle, go } = await fixture();
+		const previousView = { centerX: 12345, centerY: -67890, zoom: 0.003 };
+		Object.assign(view, previousView);
+		const old = internals.layout;
+		let resolveLayout!: (layout: RadialLayout) => void;
+		vi.spyOn(internals.index.computation, 'layout').mockImplementationOnce(() => new Promise((resolve) => { resolveLayout = resolve; }));
+		const fit = vi.spyOn(renderer, 'fitToLayout');
+		internals.useAsRoot('A'); await settle();
+		await internals.queueRebuild('metadata');
+		expect(internals.graph.rootId).toBe('A');
+		expect(fit).toHaveBeenCalledWith('A');
+		expect(view.zoom).toBe(0.5);
+		resolveLayout(old); await settle();
+		await go(-1);
+		expect(view).toEqual(previousView);
+	});
+
+	it('does not clear the current loading mask when a superseded layout fails', async () => {
+		const { internals, renderer, settle } = await fixture();
+		const old = internals.layout;
+		let rejectLayout!: (error: Error) => void;
+		let resolveLayout!: (layout: RadialLayout) => void;
+		vi.spyOn(internals.index.computation, 'layout')
+			.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectLayout = reject; }))
+			.mockImplementationOnce(() => new Promise((resolve) => { resolveLayout = resolve; }));
+		const clear = vi.spyOn(renderer, 'clearLoadingMask');
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		internals.useAsRoot('A'); await settle();
+		internals.useAsRoot('B'); await settle();
+		rejectLayout(new Error('superseded layout failed')); await settle();
+		expect(clear).not.toHaveBeenCalled();
+		resolveLayout(old); await settle();
+	});
+
+	it('centers a searched root when metadata finishes its pending navigation', async () => {
+		const { internals, view, settle, go } = await fixture();
+		Object.assign(view, { centerX: 12345, centerY: -67890, zoom: 0.003 });
+		const old = internals.layout;
+		const previousSpacing = old.positions.get('')!.siblingSpacing!;
+		let resolveLayout!: (layout: RadialLayout) => void;
+		vi.spyOn(internals.index.computation, 'layout').mockImplementationOnce(() => new Promise((resolve) => { resolveLayout = resolve; }));
+		const search = internals.openSearchNodeAsRoot('A'); await settle();
+		await internals.queueRebuild('metadata');
+		const point = internals.layout.positions.get('A')!;
+		expect(view).toEqual({ centerX: point.x, centerY: point.y, zoom: 0.003 * previousSpacing / point.siblingSpacing! });
+		const destination = { ...view };
+		resolveLayout(old); await search;
+		expect(view).toEqual(destination);
+		await go(-1); await go(1);
+		expect(view).toEqual(destination);
 	});
 
 	it('records search navigation and prevents a superseded search from moving the newer camera', async () => {
