@@ -44,15 +44,18 @@ export interface GalaxySettings {
 export type ColorScheme = 'auto' | 'day' | 'night';
 export type LabelVisibility = 'auto' | 'hover';
 export type HoverTargetMode = 'nodes' | 'links' | 'both';
-export type HoverHighlightMode =
-	| 'none'
-	| 'all-links'
-	| 'note-links'
+export type HierarchyHighlightMode =
 	| 'hierarchy-parents'
 	| 'hierarchy-direct-children'
 	| 'hierarchy-descendants'
 	| 'hierarchy-parents-direct'
 	| 'hierarchy-all';
+export type HoverHighlightMode =
+	| 'none'
+	| 'all-links'
+	| 'note-links'
+	| HierarchyHighlightMode
+	| `note-links+${Exclude<HierarchyHighlightMode, 'hierarchy-all'>}`;
 export type ExternalDetailMode = 'grouped' | 'selected' | 'exact';
 
 export interface RadialSettings {
@@ -69,6 +72,8 @@ export interface RadialSettings {
 	colorScheme: ColorScheme;
 	labelVisibility: LabelVisibility;
 	hoverHighlightMode: HoverHighlightMode;
+	/** Retain the selected scope while hierarchy highlighting is switched off. */
+	hoverHierarchyScope: HierarchyHighlightMode;
 	hoverTargetMode: HoverTargetMode;
 	swirlStrength: number;
 	showRingGuides: boolean;
@@ -89,15 +94,21 @@ export const MAX_LINK_LIMIT = 30_000;
 export const MAX_EXTERNAL_LINK_ANCHOR_LIMIT = 20_000;
 export const MAX_SWIRL_STRENGTH = 100;
 
-export const HOVER_HIGHLIGHT_MODE_OPTIONS: [HoverHighlightMode, string][] = [
-	['none', 'None'],
-	['all-links', 'All links'],
-	['note-links', 'Note links'],
+export const HIERARCHY_HIGHLIGHT_MODE_OPTIONS: [HierarchyHighlightMode, string][] = [
 	['hierarchy-parents', 'Hierarchy parents'],
 	['hierarchy-direct-children', 'Hierarchy direct children'],
 	['hierarchy-descendants', 'Hierarchy all children'],
 	['hierarchy-parents-direct', 'Hierarchy parents + direct'],
 	['hierarchy-all', 'Hierarchy parents + all children'],
+];
+
+export const HOVER_HIGHLIGHT_MODE_OPTIONS: [HoverHighlightMode, string][] = [
+	['none', 'None'],
+	['all-links', 'All links'],
+	['note-links', 'Note links'],
+	...HIERARCHY_HIGHLIGHT_MODE_OPTIONS,
+	...HIERARCHY_HIGHLIGHT_MODE_OPTIONS.filter(([mode]) => mode !== 'hierarchy-all')
+		.map(([mode, label]): [HoverHighlightMode, string] => [`note-links+${mode}` as HoverHighlightMode, `Note links + ${label}`]),
 ];
 
 export const LABEL_VISIBILITY_OPTIONS: [LabelVisibility, string][] = [
@@ -139,6 +150,7 @@ export const DEFAULT_RADIAL_SETTINGS: RadialSettings = {
 	colorScheme: 'auto',
 	labelVisibility: 'auto',
 	hoverHighlightMode: 'hierarchy-all',
+	hoverHierarchyScope: 'hierarchy-all',
 	hoverTargetMode: 'nodes',
 	swirlStrength: 0,
 	showRingGuides: false,
@@ -217,6 +229,7 @@ export function mergeRadialSettings(saved: unknown): RadialSettings {
 		colorScheme: normalizeColorScheme(s['colorScheme']),
 		labelVisibility: normalizeLabelVisibility(s['labelVisibility']),
 		hoverHighlightMode: normalizeHoverHighlightMode(hoverMode),
+		hoverHierarchyScope: hoverHierarchyMode(hoverMode) ?? normalizeHierarchyHighlightMode(s['hoverHierarchyScope']),
 		hoverTargetMode: normalizeHoverTargetMode(s['hoverTargetMode']),
 		swirlStrength: clampNumber(s['swirlStrength'], 0, MAX_SWIRL_STRENGTH, d.swirlStrength),
 		showRingGuides: typeof s['showRingGuides'] === 'boolean' ? s['showRingGuides'] : d.showRingGuides,
@@ -337,7 +350,35 @@ export function normalizeHoverTargetMode(value: unknown): HoverTargetMode {
 
 export function hoverHighlightsNoteLinks(mode: unknown): boolean {
 	const normalized = normalizeHoverHighlightMode(mode);
-	return normalized === 'note-links' || normalized === 'all-links';
+	return normalized === 'note-links' || normalized === 'all-links' || normalized.startsWith('note-links+');
+}
+
+export function normalizeHierarchyHighlightMode(value: unknown): HierarchyHighlightMode {
+	return HIERARCHY_HIGHLIGHT_MODE_OPTIONS.some(([mode]) => mode === value)
+		? value as HierarchyHighlightMode : DEFAULT_RADIAL_SETTINGS.hoverHierarchyScope;
+}
+
+export function hoverHierarchyMode(value: unknown): HierarchyHighlightMode | null {
+	const mode = normalizeHoverHighlightMode(value);
+	if (mode === 'none' || mode === 'note-links') return null;
+	if (mode === 'all-links') return 'hierarchy-all';
+	return normalizeHierarchyHighlightMode(mode.startsWith('note-links+') ? mode.slice('note-links+'.length) : mode);
+}
+
+export function combineHoverHighlights(noteLinks: boolean, hierarchy: HierarchyHighlightMode | null): HoverHighlightMode {
+	if (!hierarchy) return noteLinks ? 'note-links' : 'none';
+	if (!noteLinks) return hierarchy;
+	return hierarchy === 'hierarchy-all' ? 'all-links' : `note-links+${hierarchy}`;
+}
+
+export function updateHoverHighlights(settings: RadialSettings, change: { noteLinks?: boolean; hierarchyLinks?: boolean; hierarchyScope?: HierarchyHighlightMode }): HoverHighlightMode {
+	const currentHierarchy = hoverHierarchyMode(settings.hoverHighlightMode);
+	settings.hoverHierarchyScope = change.hierarchyScope ?? currentHierarchy ?? settings.hoverHierarchyScope;
+	settings.hoverHighlightMode = combineHoverHighlights(
+		change.noteLinks ?? hoverHighlightsNoteLinks(settings.hoverHighlightMode),
+		(change.hierarchyLinks ?? currentHierarchy !== null) ? settings.hoverHierarchyScope : null,
+	);
+	return settings.hoverHighlightMode;
 }
 
 export function hoverHighlightModeLabel(mode: unknown): string {
@@ -357,7 +398,8 @@ export function clampNumber(value: unknown, min: number, max: number, fallback: 
 }
 
 function finiteNumber(value: unknown, fallback: number): number {
-	return typeof value === 'number' && Number.isFinite(value) ? value : Number.parseFloat(String(value)) || fallback;
+	const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value));
+	return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function hasSavedIgnoreFolders(saved: unknown): boolean {

@@ -32,4 +32,8 @@ export default tseslint.config(
 		},
 	},
 	...tseslint.configs.recommended,
+	{
+		files: ['scripts/**/*.mjs'],
+		languageOptions: { globals: globals.node, parserOptions: { projectService: false } },
+	},
 );

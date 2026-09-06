@@ -16,25 +16,31 @@ function sampleObsidianBackground(scheme: ObsidianThemeScheme): string | null {
 	const body = doc.body;
 	const target = scheme === 'night' ? 'theme-dark' : 'theme-light';
 	const other = scheme === 'night' ? 'theme-light' : 'theme-dark';
-	const hadLight = body.classList.contains('theme-light');
-	const hadDark = body.classList.contains('theme-dark');
+	// Sample a forced scheme locally. Toggling the real body restyles the entire
+	// workspace and exposes a transient host theme to other views and observers.
+	// Obsidian declares the variable mappings on `body`, so a plain div would
+	// inherit the already-resolved colors of the opposite scheme.
+	const probe = body.classList.contains(target) && !body.classList.contains(other) ? null : doc.createElement('body');
+	const sample = probe ?? body;
 	try {
-		if (!body.classList.contains(target) || body.classList.contains(other)) {
-			body.classList.remove(other);
-			body.classList.add(target);
+		if (probe) {
+			probe.className = body.className;
+			probe.classList.remove(other);
+			probe.classList.add(target);
+			probe.style.cssText = body.style.cssText;
+			probe.style.setProperty('display', 'none', 'important');
+			body.appendChild(probe);
 		}
-		const style = doc.defaultView?.getComputedStyle(body) ?? getComputedStyle(body);
-		return normalizeCssColor(style.getPropertyValue('--background-primary').trim() || style.backgroundColor);
+		const style = doc.defaultView?.getComputedStyle(sample) ?? getComputedStyle(sample);
+		return normalizeCssColor(style.getPropertyValue('--background-primary').trim() || style.backgroundColor, sample);
 	} finally {
-		body.classList.toggle('theme-light', hadLight);
-		body.classList.toggle('theme-dark', hadDark);
+		probe?.remove();
 	}
 }
 
-function normalizeCssColor(value: string): string | null {
+function normalizeCssColor(value: string, parent: HTMLElement): string | null {
 	const doc = activeDocument;
-	const body = doc.body;
-	const probe = body.createSpan();
+	const probe = parent.createSpan();
 	try {
 		probe.setCssStyles({ color: value, display: 'none' });
 		if (!probe.style.color) return null;

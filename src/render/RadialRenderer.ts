@@ -17,15 +17,15 @@ import type { RadialLayout, RadialPoint, RadialRoute } from '../layout/radial/la
 import { ROOT_ID, type VisibleWorldGraph, type WorldEdge, type WorldNode } from '../world/types';
 import { RADIAL_NODE_FRAGMENT_SHADER, RADIAL_NODE_VERTEX_SHADER } from './shaders';
 import { SpatialIndex, type SpatialBounds } from './SpatialIndex';
+import { RadialLabelOccupancy, radialLabelBounds } from './radialLabelPlacement';
 
-// Hard floor keeps wheel math and hit-tests finite while still allowing huge complete maps to fit.
+// Default floor for ordinary maps; larger layouts get room to zoom past their overview.
 export const MIN_RADIAL_ZOOM = 0.00001;
 export const MAX_RADIAL_ZOOM = 6;
 const NODE_BASE_POINT = 4.8;
 // Labels intentionally progress faster than geometry zoom so large maps reveal
 // their important names without requiring several extra wheel gestures.
 const LABEL_REVEAL_ACCELERATION = 2.2;
-const AUTO_LABEL_MIN_REVEAL_ZOOM = 0.045;
 
 export interface RadialActiveState {
 	hasActive: boolean;
@@ -58,6 +58,7 @@ interface RadialPalette {
 	externalNote: string;
 	externalLink: string;
 	unresolved: string;
+	unresolvedLink: string;
 	highlightHierarchy: string;
 	highlightNoteLink: string;
 	highlightOutsideLink: string;
@@ -79,49 +80,51 @@ const PALETTES: Record<RadialResolvedScheme, RadialPalette> = {
 	day: {
 		bg: '#f8fafc',
 		ring: '#aeb7c5',
-		tree: '#aeb7c5',
-		link: '#9a86c9',
+		tree: '#5679a6',
+		link: '#8c7da5',
 		externalGroup: '#8b70c2',
 		externalNote: '#e99a2f',
-		externalLink: '#e99a2f',
+		externalLink: '#a78350',
 		unresolved: '#d66376',
-		highlightHierarchy: '#aeb7c5',
-		highlightNoteLink: '#6a4fc2',
-		highlightOutsideLink: '#e99a2f',
-		highlightUnresolvedLink: '#d66376',
+		unresolvedLink: '#af7883',
+		highlightHierarchy: '#1e4b91',
+		highlightNoteLink: '#805087',
+		highlightOutsideLink: '#916016',
+		highlightUnresolvedLink: '#ab485f',
 		folder: '#788395',
 		folderMeta: '#4479de',
 		note: '#8a79cf',
 		root: '#3568d4',
 		ringOpacity: 0.22,
-		treeOpacity: 0.26,
-		linkOpacity: 0.1,
-		externalLinkOpacity: 0.14,
-		highlightOpacity: 0.92,
+		treeOpacity: 0.7,
+		linkOpacity: 0.34,
+		externalLinkOpacity: 0.34,
+		highlightOpacity: 0.98,
 		nodeScale: 0.32,
 		maxLabels: 170,
 	},
 	night: {
 		bg: '#10131a',
 		ring: '#4d586f',
-		tree: '#667189',
-		link: '#7f6daa',
+		tree: '#8fafd6',
+		link: '#8d7aa9',
 		externalGroup: '#c2abe7',
 		externalNote: '#ffc064',
-		externalLink: '#b07e43',
+		externalLink: '#b29368',
 		unresolved: '#f493a3',
-		highlightHierarchy: '#96a0b2',
-		highlightNoteLink: '#aa92ec',
-		highlightOutsideLink: '#ffc064',
-		highlightUnresolvedLink: '#f493a3',
+		unresolvedLink: '#ba8795',
+		highlightHierarchy: '#c1d6f2',
+		highlightNoteLink: '#ab92ca',
+		highlightOutsideLink: '#cba877',
+		highlightUnresolvedLink: '#d2a0ac',
 		folder: '#b2bac7',
 		folderMeta: '#82aaff',
 		note: '#c8baf2',
 		root: '#82a1ff',
 		ringOpacity: 0.25,
-		treeOpacity: 0.34,
-		linkOpacity: 0.28,
-		externalLinkOpacity: 0.25,
+		treeOpacity: 0.59,
+		linkOpacity: 0.36,
+		externalLinkOpacity: 0.36,
 		highlightOpacity: 0.98,
 		nodeScale: 0.32,
 		maxLabels: 300,
@@ -142,6 +145,7 @@ export class RadialRenderer {
 	private ringSegments: LineSegments | null = null;
 	private hierarchySegments: LineSegments<BufferGeometry, LineBasicMaterial> | null = null;
 	private linkSegments: LineSegments<BufferGeometry, LineBasicMaterial> | null = null;
+	private linkBaseOpacity = PALETTES.night.linkOpacity;
 	private highlightSegments: Mesh | null = null;
 	private nodePoints: Points | null = null;
 	private nodeGeometry: BufferGeometry | null = null;
@@ -289,9 +293,12 @@ export class RadialRenderer {
 		const previousZoom = this.zoom;
 		this.centerX = Number.isFinite(centerX) ? centerX : 0;
 		this.centerY = Number.isFinite(centerY) ? centerY : 0;
-		this.zoom = Math.min(Math.max(Number.isFinite(zoom) ? zoom : 1, MIN_RADIAL_ZOOM), MAX_RADIAL_ZOOM);
+		this.zoom = this.clampZoom(zoom);
 		const zoomChanged = this.zoom !== previousZoom;
-		if (zoomChanged) this.updateNodeScale();
+		if (zoomChanged) {
+			this.updateNodeScale();
+			this.updateEdgeDim();
+		}
 		this.applyCamera();
 		const rebuiltHighlights = zoomChanged && this.active.highlightedEdges.size > 0;
 		if (rebuiltHighlights) this.rebuildHighlights();
@@ -301,6 +308,13 @@ export class RadialRenderer {
 
 	getView(): { centerX: number; centerY: number; zoom: number } {
 		return { centerX: this.centerX, centerY: this.centerY, zoom: this.zoom };
+	}
+
+	clampZoom(zoom: number): number {
+		const overview = this.layout ? Math.min(Math.max(1, this.width - 42) / Math.max(1, this.layout.width),
+			Math.max(1, this.height - 42) / Math.max(1, this.layout.height)) : 1;
+		const minimum = Math.min(MIN_RADIAL_ZOOM, overview * 0.05);
+		return Math.min(Math.max(Number.isFinite(zoom) ? zoom : 1, minimum), MAX_RADIAL_ZOOM);
 	}
 
 	showLoadingMask(text: string): void {
@@ -346,9 +360,13 @@ export class RadialRenderer {
 		const inset = 42;
 		const availableWidth = Math.max(1, this.width - inset);
 		const availableHeight = Math.max(1, this.height - inset);
-		const zoom = Math.min(availableWidth / Math.max(1, this.layout.width), availableHeight / Math.max(1, this.layout.height)) * 1.08;
 		const rootPoint = rootId !== null ? (this.layout.positions.get(rootId) ?? this.layout.positions.get(ROOT_ID)) : null;
-		this.setView(rootPoint?.x ?? this.layout.width / 2, rootPoint?.y ?? this.layout.height / 2, zoom);
+		const centerX = rootPoint?.x ?? this.layout.width / 2, centerY = rootPoint?.y ?? this.layout.height / 2;
+		// Fit the whole map around the chosen root. A dense pair's readable
+		// zoom is a detail view, not a lower bound on overview framing.
+		const zoom = Math.min(availableWidth / Math.max(1, 2 * Math.max(centerX, this.layout.width - centerX)),
+			availableHeight / Math.max(1, 2 * Math.max(centerY, this.layout.height - centerY)));
+		this.setView(centerX, centerY, zoom);
 		return true;
 	}
 
@@ -438,7 +456,7 @@ export class RadialRenderer {
 				if (!this.pointRevealVisible(point)) continue;
 				const distance = Math.hypot(world.x - point.x, world.y - point.y);
 				const visualRadius = Math.max(4, nodeVisualPointSize(point.nodeRadius, this.palette().nodeScale, this.zoom) * 0.55);
-				const radius = Math.max(point.nodeRadius * 0.36, visualRadius / Math.max(MIN_RADIAL_ZOOM, this.zoom)) + Math.max(5, 6 / this.zoom);
+				const radius = Math.max(point.nodeRadius * 0.36, visualRadius / this.zoom) + Math.max(5, 6 / this.zoom);
 				if (distance <= radius && (!bestNode || distance < bestNode.distance)) bestNode = { id: node.id, distance };
 			}
 		}
@@ -600,7 +618,11 @@ export class RadialRenderer {
 			}),
 		);
 		if (kind === 'hierarchy') this.hierarchySegments = line;
-		else this.linkSegments = line;
+		else {
+			this.linkSegments = line;
+			// Cache the theme's base value so wheel events do not scan every link.
+			this.linkBaseOpacity = line.material.opacity;
+		}
 		this.scene.add(line);
 	}
 
@@ -614,7 +636,7 @@ export class RadialRenderer {
 				return point ? { node, point, score: labelScore(node, point, graph) } : null;
 			})
 			.filter((item): item is { node: WorldNode; point: RadialPoint; score: number } => item !== null)
-			.sort((a, b) => b.score - a.score);
+			.sort((a, b) => labelPriority(b.node, graph) - labelPriority(a.node, graph) || b.score - a.score);
 		const positions = new Float32Array(visibleNodes.length * 3);
 		const colors = new Float32Array(visibleNodes.length * 3);
 		const sizes = new Float32Array(visibleNodes.length);
@@ -659,6 +681,8 @@ export class RadialRenderer {
 			},
 		});
 		this.nodePoints = new Points(this.nodeGeometry, this.nodeMaterial);
+		// Transparent highlights must not paint over the small node glyphs.
+		this.nodePoints.renderOrder = 2;
 		this.nodePoints.frustumCulled = false;
 		this.scene.add(this.nodePoints);
 	}
@@ -681,13 +705,16 @@ export class RadialRenderer {
 	private updateEdgeDim(): void {
 		const palette = this.palette();
 		const dimmed = this.active.dimOthers;
+		// Wheel zoom is multiplicative: interpolate in log space for an even fade.
+		// Keep a faint overview floor and restore the full palette in close views.
+		const detail = edgeZoomDetail(this.zoom);
+		const hierarchyFade = 0.18 + 0.82 * detail;
+		const linkFade = 0.05 + 0.95 * detail * detail;
 		if (this.hierarchySegments) {
-			this.hierarchySegments.material.opacity = palette.treeOpacity * (dimmed ? 0.16 : 1);
+			this.hierarchySegments.material.opacity = palette.treeOpacity * hierarchyFade * (dimmed ? 0.16 : 1);
 		}
 		if (this.linkSegments) {
-			const hasExternal = this.graph?.linkEdges.some((edge) => edge.externalCount) ?? false;
-			const baseOpacity = hasExternal ? palette.externalLinkOpacity : palette.linkOpacity;
-			this.linkSegments.material.opacity = baseOpacity * (dimmed ? 0.14 : 1);
+			this.linkSegments.material.opacity = this.linkBaseOpacity * linkFade * (dimmed ? 0.14 : 1);
 		}
 	}
 
@@ -719,7 +746,7 @@ export class RadialRenderer {
 		const positions: number[] = [];
 		const colors: number[] = [];
 		const palette = this.palette();
-		const zoom = Math.max(MIN_RADIAL_ZOOM, this.zoom || 1);
+		const zoom = this.zoom;
 		for (const key of this.active.highlightedEdges) {
 			const visual = this.edgeVisuals.get(key);
 			if (!visual) continue;
@@ -728,7 +755,7 @@ export class RadialRenderer {
 				const a = visual.points[i];
 				const b = visual.points[i + 1];
 				if (!a || !b) continue;
-				pushSegmentBand(positions, colors, color, a, b, highlightWidthPx(visual.edge) / zoom, 2);
+				pushSegmentBand(positions, colors, color, a, b, highlightWidthPx(visual.edge, zoom) / zoom, 2);
 			}
 		}
 		this.highlightSegments = new Mesh(
@@ -741,6 +768,7 @@ export class RadialRenderer {
 				depthTest: false,
 			}),
 		);
+		this.highlightSegments.renderOrder = 1;
 		this.scene.add(this.highlightSegments);
 	}
 
@@ -789,32 +817,44 @@ export class RadialRenderer {
 				const visible = screen.x >= -160 && screen.y >= -80 && screen.x <= this.width + 160 && screen.y <= this.height + 120;
 				return visible ? { node, point, screen } : null;
 			})
-			.filter((item): item is { node: WorldNode; point: RadialPoint; screen: { x: number; y: number } } => item !== null);
+			.filter((item): item is { node: WorldNode; point: RadialPoint; screen: { x: number; y: number } } => item !== null)
+			.map((item, rank) => ({ ...item, rank }));
 		const denominator = Math.max(1, ranked.length - 1);
 		const viewportScale = clampNumber(Math.sqrt(Math.max(1, this.width * this.height)) / 1050, 0.65, 1.8);
 		const revealZoom = labelRevealZoom(this.zoom);
-		const zoomCapacity = 22 + smoothstep(0.035, 0.42, revealZoom) * 64 + smoothstep(0.36, 1.3, revealZoom) * 112 + smoothstep(1.1, 6, revealZoom) * 72;
+		const zoomCapacity = 40 + smoothstep(0.035, 0.42, revealZoom) * 64 + smoothstep(0.36, 1.3, revealZoom) * 112 + smoothstep(1.1, 6, revealZoom) * 72;
 		const autoBudget =
-			labelVisibility === 'auto' && revealZoom >= AUTO_LABEL_MIN_REVEAL_ZOOM
+			labelVisibility === 'auto'
 				? Math.round(Math.min(this.palette().maxLabels, Math.max(0, zoomCapacity * viewportScale)))
 				: 0;
 		let autoShown = 0;
 		const shownIds = new Set<string>();
-		for (let rank = 0; rank < ranked.length; rank++) {
-			const item = ranked[rank]!;
-			const { node, point, screen } = item;
+		const occupied = new RadialLabelOccupancy();
+		// Reserve space for roots, hovered/selected nodes and pins before automatic names.
+		const ordered = [...ranked.filter(({ node }) => directIds.has(node.id)), ...ranked.filter(({ node }) => !directIds.has(node.id))];
+		for (const { node, point, screen, rank } of ordered) {
 			const direct = directIds.has(node.id);
+			if (!direct && autoShown >= autoBudget) continue;
+			const rootNode = node.id === this.graph.rootId || node.id === ROOT_ID;
+			const folder = node.type === 'folder';
+			const leading = rank < 36;
+			const scale = labelScreenScale(this.zoom) * (rootNode ? 1.18 : point.nodeRadius >= 24 ? 1.1 : point.nodeRadius >= 15 ? 1.04 : 1);
+			const fontSize = Math.max(rootNode ? 14 : 9.5, 12 * scale);
+			const maxWidth = Math.round(rootNode ? Math.max(200, 240 * scale) : (folder ? 210 : leading ? 196 : 180) * scale);
+			const visualNodeRadius = Math.max(5, nodeVisualPointSize(point.nodeRadius, this.palette().nodeScale, this.zoom) * 0.62);
+			const labelOffset = Math.max(9, visualNodeRadius + 6 * scale);
+			// Notes need more room in the overview; folders claim the available space first.
+			const padding = direct || folder ? 4 : 6 + (1 - smoothstep(0.04, 0.45, revealZoom)) * 12;
+			const bounds = radialLabelBounds(node.title, screen.x, screen.y + labelOffset, fontSize, maxWidth, padding);
+			if (bounds.maxX < 0 || bounds.minX > this.width || bounds.maxY < 0 || bounds.minY > this.height) continue;
+			if (!direct && occupied.intersects(bounds)) continue;
+			occupied.add(bounds);
+			// Screen space decides eligibility, even at tiny world-space zoom values.
+			// Zoom still raises emphasis as the user moves closer.
 			const strength = direct
 				? 1
-				: labelVisibility === 'auto'
-					? zoomLabelStrength(node, point, this.zoom, rank, denominator, this.graph, this.width, this.height)
-					: 0;
-			if (!direct) {
-				if (strength <= 0.06 || autoShown >= autoBudget) continue;
-				autoShown++;
-			}
-			const rootNode = node.id === this.graph.rootId || node.id === ROOT_ID;
-			const leading = rank < 36;
+				: Math.max(folder ? 0.76 : 0.5, zoomLabelStrength(node, point, this.zoom, rank, denominator, this.graph, this.width, this.height));
+			if (!direct) autoShown++;
 			const labelClasses = ['mwm-radial-label'];
 			if (rootNode) labelClasses.push('is-root');
 			if (!rootNode && (leading || node.type === 'folder')) labelClasses.push('is-strong');
@@ -827,13 +867,9 @@ export class RadialRenderer {
 			label.className = labelClasses.join(' ');
 			if (label.textContent !== node.title) label.setText(node.title);
 			this.labelRoot.appendChild(label);
-			const scale = labelScreenScale(this.zoom) * (rootNode ? 1.18 : point.nodeRadius >= 24 ? 1.1 : point.nodeRadius >= 15 ? 1.04 : 1);
-			const fontSize = Math.max(rootNode ? 12 : 9.5, 12 * scale);
 			label.style.fontSize = `${fontSize.toFixed(2)}px`;
-			label.style.maxWidth = `${Math.round((rootNode ? 240 : node.type === 'folder' ? 210 : leading ? 196 : 180) * scale)}px`;
-			label.style.opacity = String(direct ? 0.96 : Math.min(0.9, 0.22 + strength * 0.68));
-			const visualNodeRadius = Math.max(5, nodeVisualPointSize(point.nodeRadius, this.palette().nodeScale, this.zoom) * 0.62);
-			const labelOffset = Math.max(9, visualNodeRadius + 6 * scale);
+			label.style.maxWidth = `${maxWidth}px`;
+			label.style.opacity = String(rootNode ? 1 : direct ? 0.96 : Math.min(0.9, 0.22 + strength * 0.68));
 			label.style.transform = `translate3d(${screen.x.toFixed(1)}px, ${(screen.y + labelOffset).toFixed(1)}px, 0)`;
 			if (this.active.dimOthers && !directIds.has(node.id) && !this.active.relatedNodes.has(node.id)) {
 				label.style.opacity = String(Math.min(Number(label.style.opacity) || 1, 0.34));
@@ -1008,7 +1044,7 @@ function nodeShapeScale(kind: RadialNodeColorKind): number {
 }
 
 function edgeColor(edge: WorldEdge, kind: 'hierarchy' | 'links', palette: RadialPalette): Color {
-	if (edge.unresolvedCount) return new Color(palette.unresolved);
+	if (edge.unresolvedCount) return new Color(palette.unresolvedLink);
 	if (edge.externalCount) return new Color(kind === 'links' ? palette.externalLink : palette.externalGroup);
 	return new Color(kind === 'hierarchy' ? palette.tree : palette.link);
 }
@@ -1097,10 +1133,22 @@ function distanceToSegment(point: { x: number; y: number }, a: { x: number; y: n
 	return Math.hypot(point.x - (a.x + dx * t), point.y - (a.y + dy * t));
 }
 
-function highlightWidthPx(edge: WorldEdge): number {
-	if (edge.type === 'hierarchy' || edge.type === 'external-hierarchy') return 1.8;
-	if (edge.externalCount) return 2.05;
-	return 2.35;
+function edgeZoomDetail(zoom: number): number {
+	return smoothstep(Math.log2(0.005), Math.log2(0.5), Math.log2(zoom));
+}
+
+function highlightWidthPx(edge: WorldEdge, zoom: number): number {
+	if (radialEdgeHighlightKind(edge) === 'unresolved-link') return 1.6;
+	if (edge.type === 'hierarchy' || edge.type === 'external-hierarchy') return 1.6 + 0.6 * edgeZoomDetail(zoom);
+	return 1.8;
+}
+
+function labelPriority(node: WorldNode, graph: VisibleWorldGraph): number {
+	if (node.id === ROOT_ID || node.id === graph.rootId || node.id === graph.focusId) return 4;
+	if (node.type === 'folder') return 3;
+	if (node.type === 'external') return 2;
+	if (node.type === 'note') return 1;
+	return 0;
 }
 
 function labelScore(node: WorldNode, point: RadialPoint, graph: VisibleWorldGraph): number {

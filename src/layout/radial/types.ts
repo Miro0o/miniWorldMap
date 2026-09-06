@@ -37,9 +37,14 @@ export interface RadialPoint {
 	ringRadius?: number;
 	ringBandMin?: number;
 	ringBandMax?: number;
+	/** World-space spacing reference, frozen before capacity expansion. */
+	siblingSpacing?: number;
 	sectorStart?: number;
 	sectorEnd?: number;
 	sectorSpan?: number;
+	/** The family's angular corridor may widen across its children's radial band. */
+	childSectorStart?: number;
+	childSectorEnd?: number;
 }
 
 export interface RadialRing {
@@ -70,6 +75,8 @@ export interface RadialLayout {
 	centerY: number;
 	ringSpacing: number;
 	nodeSpacing: number;
+	/** Detail zoom at which unchanged glyphs are distinguishable; not a camera limit. */
+	readableZoom?: number;
 }
 
 export interface RadialLayoutOptions {

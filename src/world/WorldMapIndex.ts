@@ -5,6 +5,7 @@ import { visualNodeId } from './visibleGraph';
 import { VisibleGraphCache } from './VisibleGraphCache';
 import { WorldMapComputation } from './WorldMapComputation';
 import { collectEntries, snapshotLinks } from './vaultSnapshot';
+import { buildSubtreeNodeCounts } from './worldMapStats';
 
 export class WorldMapIndex {
 	model: WorldModel | null = null;
@@ -18,6 +19,7 @@ export class WorldMapIndex {
 	private unresolved: LinkTable | null = null;
 	private rootTitle = '';
 	private pending: Promise<void> | null = null;
+	private subtreeNodeCounts: Map<string, number> | null = null;
 
 	constructor(
 		private app: App,
@@ -44,6 +46,12 @@ export class WorldMapIndex {
 			linkEdges: 0,
 			maxDepth: 0,
 		};
+	}
+
+	subtreeNodeCount(id: string): number {
+		if (!this.model) return 0;
+		this.subtreeNodeCounts ??= buildSubtreeNodeCounts(this.model);
+		return this.subtreeNodeCounts.get(id) ?? 0;
 	}
 
 	get linkEdgesBySource(): Map<string, WorldEdge[]> {
@@ -97,6 +105,7 @@ export class WorldMapIndex {
 			const model = await this.computation.buildModel({ records, resolved, unresolved, settings: indexSettings, rootTitle });
 			if (!model || cancelled()) return;
 			this.model = model;
+			this.subtreeNodeCounts = null;
 			this.visibleCache.clear();
 		}
 		this.records = records;
@@ -113,6 +122,7 @@ export class WorldMapIndex {
 		this.revision++;
 		this.computation.dispose();
 		this.model = null;
+		this.subtreeNodeCounts = null;
 		this.dirty = true;
 		this.records = null;
 		this.resolved = null;

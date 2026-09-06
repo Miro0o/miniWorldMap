@@ -22,31 +22,64 @@ export class SpatialIndex<T> {
 	private root: Branch<T> | null;
 
 	constructor(items: readonly T[], bounds: (item: T) => SpatialBounds) {
-		const entries = items.map((value, order) => ({ ...bounds(value), value, order, code: 0 }));
+		const entries = items.map((value, order) => {
+			const area = bounds(value);
+			return { minX: area.minX, minY: area.minY, maxX: area.maxX, maxY: area.maxY, value, order, code: 0 };
+		});
 		sortSpatially(entries);
 		this.root = entries.length ? buildBranch(entries, 0, entries.length) : null;
 	}
 
 	query(x: number, y: number, radius: number): T[] {
-		if (!this.root) return [];
-		// Roundoff may expand the candidate set, but must never drop a boundary hit.
-		const padding = Number.EPSILON * Math.max(1, Math.abs(x), Math.abs(y), radius) * 8;
-		const extent = radius + padding;
-		const area = { minX: x - extent, minY: y - extent, maxX: x + extent, maxY: y + extent };
+		return this.queryBounds({ minX: x - radius, minY: y - radius, maxX: x + radius, maxY: y + radius });
+	}
+
+	/** Layout clearance only needs candidates, while picking preserves tie order. */
+	queryBounds(bounds: SpatialBounds, ordered = true): T[] {
 		const found: Entry<T>[] = [];
+		this.search(bounds, (entry) => { found.push(entry); return false; });
+		// The original traversal order decides ties between overlapping nodes/roads.
+		if (ordered) found.sort((a, b) => a.order - b.order);
+		return found.map((entry) => entry.value);
+	}
+
+	/** Stop at the first exact collision without allocating a candidate array. */
+	some(bounds: SpatialBounds, test: (item: T) => boolean): boolean {
+		return this.search(bounds, (entry) => test(entry.value));
+	}
+
+	/** Prune the empty corners of a long diagonal segment's bounding box. */
+	someAlongSegment(a: { x: number; y: number }, b: { x: number; y: number }, padding: number, test: (item: T) => boolean): boolean {
+		const dx = b.x - a.x, dy = b.y - a.y;
+		const length = Math.hypot(dx, dy);
+		const bounds = { minX: Math.min(a.x, b.x) - padding, minY: Math.min(a.y, b.y) - padding,
+			maxX: Math.max(a.x, b.x) + padding, maxY: Math.max(a.y, b.y) + padding };
+		const roundoff = Number.EPSILON * Math.max(1, Math.abs(a.x), Math.abs(a.y), Math.abs(b.x), Math.abs(b.y)) * 32;
+		const nx = length ? -dy / length : 0, ny = length ? dx / length : 0;
+		return this.search(bounds, (entry) => test(entry.value), (area) => {
+			const centerX = area.minX / 2 + area.maxX / 2, centerY = area.minY / 2 + area.maxY / 2;
+			const extent = Math.abs(nx) * (area.maxX - area.minX) / 2 + Math.abs(ny) * (area.maxY - area.minY) / 2;
+			return Math.abs(nx * (centerX - a.x) + ny * (centerY - a.y)) <= extent + padding + roundoff;
+		});
+	}
+
+	private search(bounds: SpatialBounds, test: (entry: Entry<T>) => boolean, overlaps?: (area: SpatialBounds) => boolean): boolean {
+		if (!this.root) return false;
+		// Roundoff may expand the candidate set, but must never drop a boundary hit.
+		const padding = Number.EPSILON * Math.max(1, Math.abs(bounds.minX), Math.abs(bounds.minY), Math.abs(bounds.maxX), Math.abs(bounds.maxY)) * 8;
+		const area = { minX: bounds.minX - padding, minY: bounds.minY - padding, maxX: bounds.maxX + padding, maxY: bounds.maxY + padding };
 		const stack = [this.root];
 		while (stack.length) {
 			const branch = stack.pop()!;
-			if (!intersects(branch, area)) continue;
+			if (!intersects(branch, area) || (overlaps && !overlaps(branch))) continue;
 			if (branch.entries) {
-				for (const entry of branch.entries) if (intersects(entry, area)) found.push(entry);
+				for (const entry of branch.entries) if (intersects(entry, area) && (!overlaps || overlaps(entry)) && test(entry)) return true;
 			} else {
 				if (branch.left) stack.push(branch.left);
 				if (branch.right) stack.push(branch.right);
 			}
 		}
-		// The original traversal order decides ties between overlapping nodes/roads.
-		return found.sort((a, b) => a.order - b.order).map((entry) => entry.value);
+		return false;
 	}
 }
 

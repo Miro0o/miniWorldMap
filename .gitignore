@@ -5,3 +5,15 @@ data.json
 dist/
 dev-vault/
 *.log
+
+# Obsolete generated bundle; the supported entry point is /main.js.
+/legacy/
+
+# Local test, coverage and profiling output.
+/coverage/
+/.vitest/
+/test-results/
+/playwright-report/
+*.tsbuildinfo
+*.cpuprofile
+*.heapprofile

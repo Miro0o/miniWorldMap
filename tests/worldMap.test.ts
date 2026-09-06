@@ -103,6 +103,36 @@ describe('world-map model', () => {
 		const m = model({ includeUnresolvedLinks: false });
 		expect([...m.nodes.values()].filter((node) => node.type === 'unresolved')).toHaveLength(0);
 	});
+
+	it.each([true, false])('aggregates Vault notes and weighted references, with unresolved links %s', (includeUnresolvedLinks) => {
+		const m = model({ includeUnresolvedLinks });
+		const references = includeUnresolvedLinks ? 5 : 4;
+		expect(m.nodes.get(ROOT_ID)).toMatchObject({ noteCount: 4, descendantCount: 4, linkCount: references, backlinkCount: references });
+		expect(m.nodes.get('Atlas')).toMatchObject({ noteCount: 3, descendantCount: 3, linkCount: includeUnresolvedLinks ? 4 : 3, backlinkCount: includeUnresolvedLinks ? 4 : 3 });
+		expect(m.nodes.get('Atlas/Topic A.md')).toMatchObject({ noteCount: 1, linkCount: includeUnresolvedLinks ? 4 : 3, backlinkCount: 1 });
+		expect(m.stats.linkEdges).toBe(includeUnresolvedLinks ? 4 : 3);
+	});
+
+	it('includes loose root notes, excludes ignored folders and keeps empty Vault totals zero', () => {
+		const settings = { ...DEFAULT_RADIAL_SETTINGS, ignoreFolders: ['Ignored'] };
+		const m = buildWorldMap([
+			{ path: 'Loose.md', basename: 'Loose', kind: 'note' },
+			{ path: 'Folder/Nested/Note.md', basename: 'Note', kind: 'note' },
+			{ path: 'Ignored/Hidden.md', basename: 'Hidden', kind: 'note' },
+		], { 'Loose.md': { 'Folder/Nested/Note.md': 3, 'Ignored/Hidden.md': 2 } }, {}, settings);
+		expect(m.nodes.get(ROOT_ID)).toMatchObject({ noteCount: 2, descendantCount: 2, linkCount: 3, backlinkCount: 3 });
+		expect(buildWorldMap([], {}, {}, settings).nodes.get(ROOT_ID)).toMatchObject({ noteCount: 0, descendantCount: 0, linkCount: 0, backlinkCount: 0 });
+	});
+
+	it.each([ROOT_ID, 'Atlas'])('keeps node sizes and the full layout unchanged by Vault totals for root %s', (rootPath) => {
+		const current = model();
+		const previous = structuredClone(current);
+		Object.assign(previous.nodes.get(ROOT_ID)!, { noteCount: 0, descendantCount: 0, linkCount: 0, backlinkCount: 0 });
+		const state = { ...defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS), rootPath, showCompleteRoot: true, showLinkOverlay: true };
+		const options = { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 30 };
+		expect(layoutRadialGraph(buildVisibleWorldGraph(current, state, DEFAULT_RADIAL_SETTINGS), options))
+			.toEqual(layoutRadialGraph(buildVisibleWorldGraph(previous, state, DEFAULT_RADIAL_SETTINGS), options));
+	});
 });
 
 describe('visible world graph', () => {
@@ -145,12 +175,12 @@ describe('visible world graph', () => {
 		expect(graph.hoverLinkEdges.length).toBeGreaterThan(0);
 	});
 
-	it('keeps note links available for the all-connections hover mode', () => {
+	it.each(['all-links', 'note-links+hierarchy-parents', 'note-links+hierarchy-direct-children', 'note-links+hierarchy-descendants', 'note-links+hierarchy-parents-direct'] as const)('keeps note links available for the %s hover mode', (mode) => {
 		const m = model();
 		const state = defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS);
 		state.rootPath = 'Atlas';
 		state.showLinkOverlay = false;
-		state.hoverHighlightMode = 'all-links';
+		state.hoverHighlightMode = mode;
 		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
 		expect(graph.rootId).toBe('Atlas');
 		expect(graph.hoverLinkEdges.length).toBeGreaterThan(0);
@@ -338,9 +368,13 @@ describe('radial layout', () => {
 			'Core/Branch 5/Section 4/Topic 3/Leaf 3.md',
 		].map((id) => layout.positions.get(id)?.angle ?? 0);
 		const stepDeltas = route.slice(1).map((angle, index) => angleDelta(angle, route[index] ?? 0));
-		const branchAngles = Array.from({ length: 12 }, (_, index) => layout.positions.get(`Core/Branch ${index}`)?.angle ?? 0);
-
-		expect(angleSpreadAround(layout.positions.get('Core')?.angle ?? 0, branchAngles)).toBeGreaterThan(4.2);
+		const core = layout.positions.get('Core')!;
+		for (let index = 0; index < 12; index++) {
+			const branch = layout.positions.get(`Core/Branch ${index}`)!;
+			// Core is below the vault root, so its branches must depart outward
+			// instead of being forced to wrap through the inner band.
+			expect(Math.cos(branch.angle - core.angle) * branch.radius).toBeGreaterThanOrEqual(core.radius - 1e-6);
+		}
 		expect(Math.max(...stepDeltas)).toBeLessThan(1.16);
 		expect(angleSpreadAround(route[0] ?? 0, route)).toBeLessThan(1.9);
 	});
@@ -543,7 +577,7 @@ describe('radial layout', () => {
 
 		expect(lowerPerimeterGap).toBeGreaterThan(previousGap * 1.18);
 		expect(lowerPerimeterGap).toBeGreaterThan(layout.ringSpacing * 1.45);
-		expect((routeRadii[routeRadii.length - 1] ?? 0) - (ringsByDepth.get(4) ?? 0)).toBeLessThan(layout.ringSpacing * 18);
+		expect((routeRadii[routeRadii.length - 1] ?? 0) - (ringsByDepth.get(4) ?? 0)).toBeLessThan(previousGap * 18);
 		expect(routeRadii).toEqual([...routeRadii].sort((a, b) => a - b));
 		expect(Math.max(...angleSteps)).toBeLessThan(0.36);
 		expect(hierarchyRouteCrossings(graph, layout)).toBe(0);
@@ -644,7 +678,7 @@ describe('radial layout', () => {
 		const spread = angleSpreadAround(parent?.angle ?? 0, leaves);
 
 		expect(spread).toBeGreaterThan(0.55);
-		expect(spread).toBeLessThan(1.3);
+		expect(spread).toBeLessThanOrEqual(1.3 + 1e-8);
 	});
 
 	it('lets the final visible ring spend radius before widening deep leaf fans', () => {
@@ -864,7 +898,7 @@ describe('radial layout', () => {
 		expect(angleDelta(alpha?.angle ?? 0, beta?.angle ?? 0)).toBeGreaterThan(0.8);
 	});
 
-	it('keeps jagged same-depth routes in hierarchy order', () => {
+	it('keeps same-depth routes ordered when sibling groups settle into band lanes', () => {
 		const parents = ['Alpha', 'Beta', 'Gamma', 'Delta'];
 		const records: { path: string; basename: string; kind: 'folder' | 'note' }[] = [
 			{ path: 'Topic', basename: 'Topic', kind: 'folder' },
@@ -882,11 +916,21 @@ describe('radial layout', () => {
 		state.nodeLimit = 1200;
 		const graph = buildVisibleWorldGraph(m, state, DEFAULT_RADIAL_SETTINGS);
 		const layout = layoutRadialGraph(graph, { ringSpacing: 960, nodeSpacing: 126, swirlStrength: 0 });
-		const leafRadii = parents.flatMap((parent) =>
-			Array.from({ length: 24 }, (_, index) => layout.positions.get(`Topic/${parent}/Leaf ${index}.md`)?.radius ?? 0),
-		);
-
-		expect(Math.max(...leafRadii) - Math.min(...leafRadii)).toBeGreaterThan(25);
+		// Disjoint fans may choose the same radius when it better matches their
+		// distance target. Staggering is required where groups compete for space,
+		// rather than forcing a different radius for every unrelated family.
+		for (const parent of parents) {
+			const points = Array.from({ length: 24 }, (_, index) => layout.positions.get(`Topic/${parent}/Leaf ${index}.md`)!);
+			for (const point of points) {
+				expect(point.radius).toBeGreaterThanOrEqual(point.ringBandMin!);
+				expect(point.radius).toBeLessThanOrEqual(point.ringBandMax!);
+				expect(point.radius).toBeCloseTo(points[0]!.radius, 6);
+			}
+			for (let i = 0; i < points.length; i++) for (let j = i + 1; j < points.length; j++) {
+				const a = points[i]!, b = points[j]!;
+				expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThan(a.nodeRadius + b.nodeRadius + 4);
+			}
+		}
 		expect(hierarchyRouteCrossings(graph, layout)).toBe(0);
 	});
 

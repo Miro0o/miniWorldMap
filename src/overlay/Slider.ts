@@ -82,17 +82,22 @@ export class Slider {
 			this.spec.onInput();
 		};
 		this.trackEl.addEventListener('pointerdown', (e) => {
+			if (e.button !== 0) return;
 			e.preventDefault();
 			this.trackEl.setPointerCapture(e.pointerId);
 			onPointer(e);
 			const move = (ev: PointerEvent) => onPointer(ev);
 			const up = (ev: PointerEvent) => {
-				this.trackEl.releasePointerCapture(ev.pointerId);
 				this.trackEl.removeEventListener('pointermove', move);
 				this.trackEl.removeEventListener('pointerup', up);
+				this.trackEl.removeEventListener('pointercancel', up);
+				this.trackEl.removeEventListener('lostpointercapture', up);
+				if (this.trackEl.hasPointerCapture(ev.pointerId)) this.trackEl.releasePointerCapture(ev.pointerId);
 			};
 			this.trackEl.addEventListener('pointermove', move);
 			this.trackEl.addEventListener('pointerup', up);
+			this.trackEl.addEventListener('pointercancel', up);
+			this.trackEl.addEventListener('lostpointercapture', up);
 		});
 	}
 

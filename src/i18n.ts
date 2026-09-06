@@ -7,6 +7,7 @@ import type {
 	Language,
 	ViewMode,
 } from './settings';
+import { hoverHierarchyMode, normalizeHoverHighlightMode } from './settings';
 
 export const LANGUAGE_OPTIONS: [Language, string][] = [
 	['en', 'English'],
@@ -19,10 +20,18 @@ const STRINGS: Record<string, Record<Language, string>> = {
 	'language.zh': { en: 'Chinese', zh: '中文' },
 	'mode.radial2d': { en: '2D', zh: '2D' },
 	'mode.map3d': { en: '3D', zh: '3D' },
-	'stats.counts': { en: '{nodes} nodes / {links} links', zh: '{nodes} 个节点 / {links} 条链接' },
+	'stats.counts': { en: 'Current rendering: {nodes} nodes / {links} links', zh: '当前渲染：{nodes} 个节点 / {links} 条链接' },
+	'stats.counts.desc': {
+		en: 'Inside the current root: {inside} nodes ({folders} folders, {notes} notes, {missing} missing targets). Outside the current root: {outside} nodes.\n\nThe header counts {links} note-link lines; {hierarchy} hierarchy lines are separate. Repeated or grouped references can share one line. Counts follow display limits and legend filters; a folder and its matching folder note share one node.',
+		zh: '当前根内：{inside} 个节点（{folders} 个文件夹、{notes} 个笔记节点、{missing} 个缺失目标）。当前根外：{outside} 个节点。\n\n标题中的 {links} 条链接为笔记链接线，另有 {hierarchy} 条层级连线。重复或分组引用可能合为一条线。统计遵循显示限制和图例筛选；文件夹与同名文件夹笔记合为一个节点。',
+	},
 	'stats.3d': {
 		en: '{fps} fps · {calls} calls · {nodes}n/{links}l · {state}',
 		zh: '{fps} fps · {calls} calls · {nodes} 节点/{links} 链接 · {state}',
+	},
+	'stats.3d.desc': {
+		en: 'Node and link totals for the current 3D map, after filters and quantity limits. Repeated references from the same source to the same target count as one link. FPS measures frames per second; calls measures draw calls.',
+		zh: '节点和链接数为筛选及数量限制后的当前 3D 地图总数。同一来源到同一目标的重复引用只计一条链接。fps 为每秒帧数，calls 为绘制调用次数。',
 	},
 	'state.settled': { en: 'settled', zh: '已沉降' },
 	'state.layout': { en: 'layout', zh: '布局中' },
@@ -83,18 +92,46 @@ const STRINGS: Record<string, Record<Language, string>> = {
 
 	'inspect.type': { en: 'Type', zh: '类型' },
 	'inspect.depth': { en: 'Hierarchy level', zh: '层级' },
-	'inspect.notes': { en: 'Notes below', zh: '下级笔记' },
+	'inspect.notes': { en: 'Markdown notes', zh: 'Markdown 笔记数' },
+	'inspect.subtreeNodes': { en: 'Subtree nodes (total)', zh: '子树节点总数' },
+	'inspect.renderedSubtreeNodes': { en: 'Subtree nodes (rendered)', zh: '子树已渲染节点' },
 	'inspect.folder': { en: 'Folder', zh: '文件夹' },
 	'inspect.modified': { en: 'Modified', zh: '修改时间' },
 	'inspect.out': { en: 'Outgoing links', zh: '出链数' },
 	'inspect.in': { en: 'Backlinks', zh: '反向链接数' },
+	'inspect.outReferences': { en: 'Outgoing references', zh: '出链引用次数' },
+	'inspect.inReferences': { en: 'Incoming references', zh: '反向链接引用次数' },
+	'inspect.counts.folder': {
+		en: 'Subtree nodes include this folder, its descendants and enabled missing targets; matching folder notes share their folder’s node. The rendered subtotal excludes outside nodes. Markdown notes count actual files, including folded folder notes. References sum all descendant notes, including repeated references. The lists below show only this node’s own direct links.',
+		zh: '子树节点包含当前文件夹、所有下级节点及已启用的缺失目标；同名文件夹笔记合入文件夹节点。已渲染数量不含子树外节点。Markdown 笔记按实际文件计数，包含已合并的文件夹笔记。引用次数汇总全部下级笔记，含重复引用；下方列表仅列节点自身的直接链接。',
+	},
+	'inspect.counts.node': {
+		en: 'Counts for this node. Outgoing links and backlinks count each reference, including repeats. The lists below show up to 20 direct links per direction.',
+		zh: '统计当前节点；出链与反向链接按引用次数累计，包含重复引用。下方列表每个方向最多显示 20 条直接链接。',
+	},
+	'inspect.counts.external': {
+		en: 'This is an outside group, with no direct links of its own. Select a specific note to see its outgoing links and backlinks.',
+		zh: '这是库外分组节点，本身没有直接链接；选择具体笔记可查看其出链与反向链接。',
+	},
+	'inspect.counts.desc': {
+		en: 'Subtree totals and references follow the ignored-folder and missing-link settings. Rendered counts additionally follow the current display depth, quantity limits and legend visibility.',
+		zh: '子树总数和引用次数遵循忽略目录及未解析链接设置；已渲染数量还受当前显示深度、数量上限和图例筛选影响。',
+	},
+	'3d.inspect.counts': {
+		en: 'Counts distinct sources and targets for this node; repeated references count once. Map quantity limits may hide some of these links.',
+		zh: '按当前节点的不同来源和目标计数，重复引用只计一次；地图数量限制可能隐藏其中部分链接。',
+	},
 	'inspect.linkOverlay': { en: 'Note link', zh: '笔记链接' },
 	'inspect.weight': { en: 'Total link weight', zh: '链接总权重' },
 	'inspect.raw': { en: 'Original links', zh: '原始链接数' },
 	'inspect.unresolved': { en: 'Missing targets', zh: '缺失目标数' },
 	'inspect.external': { en: 'Cross-root links', zh: '跨根链接数' },
-	'inspect.outgoing': { en: 'Outgoing ({count})', zh: '出链（{count}）' },
-	'inspect.backlinks': { en: 'Backlinks ({count})', zh: '反向链接（{count}）' },
+	'inspect.outgoing': { en: 'Direct outgoing ({count})', zh: '直接出链（{count}）' },
+	'inspect.backlinks': { en: 'Direct backlinks ({count})', zh: '直接反向链接（{count}）' },
+	'inspect.neighbors.desc': {
+		en: 'The number in the heading counts the entries listed here, up to 20 per direction. Each entry’s number counts references. Links belonging to descendant notes are not listed here.',
+		zh: '标题数字为此处列出的条目数，每个方向最多 20 条；每项括号中的数字为引用次数。此列表不展开下级笔记的链接。',
+	},
 	'inspect.parentRoot': { en: 'Parent root', zh: '上一级根' },
 
 	'pins.groupName': { en: 'Group name (optional)', zh: '分组名称（可选）' },
@@ -132,6 +169,7 @@ const STRINGS: Record<string, Record<Language, string>> = {
 	'control.noteLinks': { en: 'Link limit', zh: '链接上限' },
 	'control.showNoteLinks': { en: 'Show note links', zh: '显示笔记链接' },
 	'control.hover': { en: 'Highlight on hover', zh: '悬停时高亮' },
+	'control.hoverHierarchyScope': { en: 'Hierarchy scope', zh: '层级高亮范围' },
 	'control.hoverTargets': { en: 'Hoverable items', zh: '可悬停对象' },
 	'control.labels': { en: 'Node labels', zh: '节点名称' },
 	'control.spin': { en: 'Ring rotation', zh: '环形旋转' },
@@ -149,11 +187,12 @@ const STRINGS: Record<string, Record<Language, string>> = {
 	'hover.none': { en: 'None', zh: '无' },
 	'hover.all-links': { en: 'All links', zh: '全部链接' },
 	'hover.note-links': { en: 'Note links', zh: '笔记链接' },
+	'hover.hierarchy-links': { en: 'Hierarchy links', zh: '层级链接' },
 	'hover.hierarchy-parents': { en: 'Parents', zh: '父级' },
 	'hover.hierarchy-direct-children': { en: 'Direct children', zh: '直接子级' },
-	'hover.hierarchy-descendants': { en: 'All children', zh: '全部子级' },
+	'hover.hierarchy-descendants': { en: 'All descendants', zh: '全部后代' },
 	'hover.hierarchy-parents-direct': { en: 'Parents + direct children', zh: '父级 + 直接子级' },
-	'hover.hierarchy-all': { en: 'Parents + all children', zh: '父级 + 全部子级' },
+	'hover.hierarchy-all': { en: 'Parents + all descendants', zh: '父级 + 全部后代' },
 	'hoverTarget.nodes': { en: 'Nodes only', zh: '仅节点' },
 	'hoverTarget.links': { en: 'Note-link lines only', zh: '仅笔记链接线' },
 	'hoverTarget.both': { en: 'Nodes + note-link lines', zh: '节点 + 笔记链接线' },
@@ -312,11 +351,14 @@ const STRINGS: Record<string, Record<Language, string>> = {
 		zh: '保持笔记链接可见；关闭后悬停与链接固定仍可用。',
 	},
 	'settings.hoverDesc': {
-		en: 'Choose which links stay bright when you hover a node. All links includes note links, parents, and every child level.',
-		zh: '选择悬停节点时保持明亮的链接。“全部链接”包括笔记链接、父级和所有层级的子级。',
+		en: 'Choose note links, hierarchy links, both, or neither. The hierarchy scope controls which relatives are highlighted.',
+		zh: '笔记链接与层级链接可独立开关，也可同时开启或关闭；层级范围决定高亮哪些关联节点。',
 	},
+	'settings.hoverNoteLinksDesc': { en: 'Highlight the hovered node’s incoming and outgoing note links, independently of hierarchy highlighting.', zh: '高亮悬停节点的笔记出链和反向链接，与层级高亮独立。' },
+	'settings.hoverHierarchyLinksDesc': { en: 'Highlight hierarchy links and related nodes within the selected scope, independently of note links.', zh: '按所选范围高亮层级链接及关联节点，与笔记链接高亮独立。' },
+	'settings.hoverHierarchyScopeDesc': { en: 'Parents includes the ancestor path. Direct children includes one level; all descendants includes every level. The selected scope is remembered while hierarchy highlighting is off.', zh: '父级包含整条祖先路径；直接子级仅包含下一层，全部后代包含所有下级。关闭层级高亮后会保留所选范围。' },
 	'settings.hoverTargetsDesc': { en: 'Choose whether nodes, note-link roads, or both react to hover and click.', zh: '选择节点、笔记链接道路或两者是否响应悬停和点击。' },
-	'settings.labelsDesc': { en: 'Auto shows important names by zoom; hover only keeps the map quieter.', zh: '自动按缩放显示重要名称；仅悬停会更安静。' },
+	'settings.labelsDesc': { en: 'Auto prioritizes folder names and reveals more notes as screen space opens up; hover only keeps the map quieter.', zh: '自动优先显示文件夹名称，随屏幕空间增加显示更多笔记名称；仅悬停会更安静。' },
 	'settings.spinDesc': { en: 'Optional radial ring motion in the 2D map.', zh: '2D 环形图中的可选环形运动。' },
 	'settings.ringGuidesDesc': { en: 'Draw circles that mark hierarchy depth levels.', zh: '绘制表示层级深度的圆环。' },
 	'settings.outsideLinksDesc': { en: 'Show note links that cross outside the current root.', zh: '显示跨出当前根的笔记链接。' },
@@ -352,8 +394,15 @@ export function languageOptions(language: Language): [Language, string][] {
 	return LANGUAGE_OPTIONS.map(([value, label]) => [value, label]);
 }
 
-export function hoverModeOptions(language: Language, values: readonly [HoverHighlightMode, string][]): [HoverHighlightMode, string][] {
-	return values.map(([value]) => [value, t(language, `hover.${value}`)]);
+export function hoverModeLabel(language: Language, value: unknown): string {
+	const mode = normalizeHoverHighlightMode(value);
+	return mode.startsWith('note-links+')
+		? `${t(language, 'hover.note-links')} + ${t(language, `hover.${hoverHierarchyMode(mode)}`)}`
+		: t(language, `hover.${mode}`);
+}
+
+export function hoverModeOptions<T extends HoverHighlightMode>(language: Language, values: readonly [T, string][]): [T, string][] {
+	return values.map(([value]) => [value, hoverModeLabel(language, value)]);
 }
 
 export function hoverTargetOptions(language: Language, values: readonly [HoverTargetMode, string][]): [HoverTargetMode, string][] {

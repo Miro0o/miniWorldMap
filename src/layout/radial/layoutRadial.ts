@@ -1,11 +1,17 @@
 import type { VisibleWorldGraph, WorldNode } from '../../world/types';
 import type { RadialLayoutOptions, RadialLayout, RadialPoint, Metric, SpacingProfile, DepthRingStats, DepthLayoutPolicy, DepthLayoutProfile, RingItem, SectorRingLaneItem } from './types';
-import { clamp, maxLinkDegree, makePoint, nodeRadius, setPointSector, compareLayoutNode, maxRadius, computeLinkRoutes, radialLayoutBounds, shiftRadialLayout, anchorHomePositions, computeRings, labelArcPadding, normalizeAngle, smoothstep, labelCollisionPadding, deterministicPairAngle, shortestAngleDelta, blendAngles, medianNumber, deterministicUnitOffset, averageAngles, unwrapAngleNear, setPointAngle } from './geometry';
+import { clamp, maxLinkDegree, makePoint, nodeRadius, setPointSector, compareLayoutNode, maxRadius, computeLinkRoutes, radialLayoutBounds, shiftRadialLayout, anchorHomePositions, computeRings, labelArcPadding, normalizeAngle, smoothstep, labelCollisionPadding, deterministicPairAngle, shortestAngleDelta, blendAngles, medianNumber, deterministicUnitOffset, averageAngles } from './geometry';
 import { MIN_RING_SPACING, MAX_RING_SPACING, MIN_NODE_SPACING, MAX_NODE_SPACING, RING_JAGGED_BAND_FACTOR, RING_JAGGED_OUTER_FACTOR, RING_JAGGED_INNER_FACTOR } from './types';
 import { ROOT_ID } from '../../world/types';
 import { childrenByParentMap, measureSubtree, collectReachable, placeRadialChildren } from './hierarchy';
 import { placeOuterCircleNodes, placeExternalShells } from './externalShells';
 import { nodeKindKey, angularSpreadAround } from './ringGroups';
+import { arrangeHierarchySectors, expandHierarchyFans, separateHierarchyBranches } from './sectorConstraints';
+import { spreadRingSiblings, syncFamilySectors } from './ringFanSpacing';
+import { spreadRootNotes } from './terminalNoteSpacing';
+import { separateDepthBands } from './depthBands';
+import { compactHierarchyBands } from './compactBands';
+import { ensureBandCapacity } from './bandCapacity';
 export { DEFAULT_RING_SPACING, MIN_RING_SPACING, MAX_RING_SPACING, DEFAULT_NODE_SPACING, MIN_NODE_SPACING, MAX_NODE_SPACING } from './types';
 export type { RadialPoint, RadialRing, RadialRoute, RadialLayout, RadialLayoutOptions } from './types';
 
@@ -70,10 +76,20 @@ export function layoutRadialGraph(graph: VisibleWorldGraph, options: RadialLayou
 	enforceDepthBaselineProgression(positions, ringTargets, spacing);
 	const spinSpeed = clamp(options.swirlStrength, 0, 100) / 100;
 	const swirlStrength = spinSpeed > 0.001 ? clamp(0.24 + spinSpeed * 0.34, 0.24, 0.58) : 0;
-	if (swirlStrength > 0.001) applyRadialSwirl(positions, graph, spacing, swirlStrength);
-	preserveHierarchyRouteOrder(positions, graph);
-	enforceOuterHierarchyContinuity(positions, graph, spacing);
-	outerRadius = Math.max(outerRadius, maxRadius(positions));
+	arrangeHierarchySectors(positions, graph, swirlStrength);
+	if (!compactHierarchyBands(positions, graph, ringTargets, baseRingGap, baseNodeGap)) {
+		const initialOuter = maxRadius(positions);
+		enforceOuterHierarchyContinuity(positions, graph, spacing);
+		separateHierarchyBranches(positions, graph, spacing.ringGap);
+		expandHierarchyFans(positions, graph, spacing.nodeGap);
+		const depthBands = separateDepthBands(positions, ringTargets);
+		spreadRingSiblings(positions, graph, spacing.nodeGap, depthBands);
+		if (maxRadius(positions) > initialOuter * 1.2) compactHierarchyBands(positions, graph, ringTargets, baseRingGap, baseNodeGap);
+	}
+	spreadRootNotes(positions, graph);
+	syncFamilySectors(positions, childrenByParent);
+	const capacity = ensureBandCapacity(positions, graph, ringTargets, baseNodeGap);
+	outerRadius = Math.max(spacing.ringGap, maxRadius(positions));
 	outerRadius = Math.max(
 		outerRadius,
 		placeExternalShells(externalGroups, externalFiles, positions, graph, nodesById, outerRadius, maxTreeDepth, spacing, maxDegree),
@@ -106,6 +122,7 @@ export function layoutRadialGraph(graph: VisibleWorldGraph, options: RadialLayou
 		centerY: offsetY,
 		ringSpacing: spacing.ringGap,
 		nodeSpacing: spacing.nodeGap,
+		readableZoom: capacity.readableZoom,
 	};
 }
 
@@ -1344,24 +1361,6 @@ function ringParentKey(item: RingItem): string {
 	return item.parentId ?? item.id;
 }
 
-function applyRadialSwirl(positions: Map<string, RadialPoint>, graph: VisibleWorldGraph, spacing: SpacingProfile, amount: number): void {
-	const rootId = graph.rootId || ROOT_ID;
-	const direction = deterministicUnitOffset(rootId || 'vault', 'swirl-direction') >= 0 ? 1 : -1;
-	for (const [id, point] of positions.entries()) {
-		if (point.radius <= 0.001) continue;
-		const depth = Math.max(0, point.depth || 0);
-		const baseAngle = Number.isFinite(point.angle) ? point.angle : Math.atan2(point.y, point.x);
-		const radialPhase = Math.sqrt(Math.max(0, point.radius) / Math.max(1, spacing.ringGap));
-		const armVariation = deterministicUnitOffset(id, 'swirl-arm') * 0.16;
-		const wave = Math.sin(baseAngle * 2.35 + depth * 0.78) * 0.11;
-		const turn = direction * amount * (depth * 0.32 + radialPhase * 0.22 + armVariation + wave);
-		const angle = normalizeAngle(baseAngle + turn);
-		point.x = Math.cos(angle) * point.radius;
-		point.y = Math.sin(angle) * point.radius;
-		point.angle = angle;
-	}
-}
-
 function enforceOuterHierarchyContinuity(
 	positions: Map<string, RadialPoint>,
 	graph: VisibleWorldGraph,
@@ -1483,121 +1482,6 @@ function liftPointWithinRingBand(point: RadialPoint, delta: number): void {
 	point.x = Math.cos(angle) * point.radius;
 	point.y = Math.sin(angle) * point.radius;
 	point.angle = normalizeAngle(angle);
-}
-
-function preserveHierarchyRouteOrder(positions: Map<string, RadialPoint>, graph: VisibleWorldGraph): void {
-	const childrenByParent = new Map<string, string[]>();
-	for (const edge of graph.hierarchyEdges) {
-		if (!positions.has(edge.source) || !positions.has(edge.target)) continue;
-		const children = childrenByParent.get(edge.source);
-		if (children) children.push(edge.target);
-		else childrenByParent.set(edge.source, [edge.target]);
-	}
-	const maxVisibleDepth = Math.max(0, ...[...positions.values()].map((point) => Math.max(0, Math.round(point.depth || 0))));
-	const parentIds = [...childrenByParent.keys()].sort(
-		(a, b) => (positions.get(a)?.depth ?? 0) - (positions.get(b)?.depth ?? 0),
-	);
-	for (const parentId of parentIds) {
-		const parent = positions.get(parentId);
-		const childIds = childrenByParent.get(parentId) ?? [];
-		if (!parent || childIds.length === 0) continue;
-		const childPoints = childIds
-			.map((id) => ({ id, point: positions.get(id), node: graph.nodesById.get(id) }))
-			.filter((entry): entry is { id: string; point: RadialPoint; node: WorldNode | undefined } => Boolean(entry.point));
-		if (childPoints.length <= 1) continue;
-		const parentAngle = Number.isFinite(parent.angle) ? parent.angle : Math.atan2(parent.y, parent.x);
-		const parentDepth = Math.max(0, Math.round(parent.depth || 0));
-		const inheritedSpan = clamp(parent.sectorSpan ?? Math.PI * 2, 0.024, Math.PI * 2);
-		const guardSpan = inheritedSpan >= Math.PI * 2 - 0.001 ? Math.PI * 2 : inheritedSpan * 0.985;
-		const pad = childPoints.length > 1 && guardSpan < Math.PI * 2 ? Math.min(guardSpan * 0.04, 0.035) : 0;
-		const start = parentAngle - guardSpan / 2 + pad;
-		const end = parentAngle + guardSpan / 2 - pad;
-		const span = Math.max(0.001, end - start);
-		const minGap = childPoints.length > 1 ? Math.min(0.045, Math.max(0.003, span / (childPoints.length * 18))) : 0;
-		const ordered = childPoints
-			.map((entry) => ({
-				...entry,
-				angle: unwrapAngleNear(entry.point.angle, parentAngle),
-			}))
-			.sort((a, b) => a.angle - b.angle || a.id.localeCompare(b.id));
-		const finalVisibleFan = ordered.every((entry) => Math.max(0, Math.round(entry.point.depth || 0)) >= maxVisibleDepth);
-		if (parentDepth > 1 && applyControlledSiblingFan(ordered, parent, parentAngle, start, end, finalVisibleFan)) continue;
-		let previousAngle = start - minGap;
-		for (let index = 0; index < ordered.length; index++) {
-			const entry = ordered[index];
-			if (!entry) continue;
-			const remaining = ordered.length - index - 1;
-			const minAllowed = previousAngle + minGap;
-			const maxAllowed = end - remaining * minGap;
-			const nextAngle = clamp(entry.angle, minAllowed, Math.max(minAllowed, maxAllowed));
-			setPointAngle(entry.point, nextAngle);
-			previousAngle = nextAngle;
-		}
-	}
-}
-
-function applyControlledSiblingFan(
-	ordered: { id: string; point: RadialPoint; node?: WorldNode; angle: number }[],
-	parent: RadialPoint,
-	parentAngle: number,
-	sectorStart: number,
-	sectorEnd: number,
-	finalVisibleFan = false,
-): boolean {
-	if (ordered.length <= 1) return false;
-	const currentSpread = Math.max(0, (ordered[ordered.length - 1]?.angle ?? parentAngle) - (ordered[0]?.angle ?? parentAngle));
-	const sectorSpan = Math.max(0.001, sectorEnd - sectorStart);
-	const demandSpan = finalVisibleFan ? finalSiblingFanDemandSpan(ordered) : 0;
-	const baseMinSpan = controlledSiblingMinSpan(ordered.length, sectorSpan);
-	const baseMaxSpan = controlledSiblingMaxSpan(ordered.length, parent.depth, sectorSpan);
-	const minSpan = finalVisibleFan
-		? clamp(
-				Math.max(finalSiblingFanArcFloor(ordered.length, sectorSpan), demandSpan * 1.02),
-				Math.min(0.08, sectorSpan),
-				Math.min(baseMinSpan, sectorSpan),
-			)
-		: baseMinSpan;
-	const maxSpan = finalVisibleFan
-		? Math.max(minSpan, Math.min(baseMaxSpan, Math.max(minSpan, demandSpan * 1.32 + 0.05), sectorSpan * 0.72))
-		: baseMaxSpan;
-	const targetSpan = finalVisibleFan
-		? clamp(Math.min(currentSpread, Math.max(minSpan, demandSpan * 1.14 + 0.035)), minSpan, maxSpan)
-		: clamp(currentSpread, minSpan, maxSpan);
-	if (Math.abs(targetSpan - currentSpread) < 0.018) return false;
-	const fanStart = clamp(parentAngle - targetSpan / 2, sectorStart, Math.max(sectorStart, sectorEnd - targetSpan));
-	const step = ordered.length > 1 ? targetSpan / (ordered.length - 1) : 0;
-	for (let index = 0; index < ordered.length; index++) {
-		const entry = ordered[index];
-		if (!entry) continue;
-		const angle = ordered.length === 1 ? parentAngle : fanStart + step * index;
-		setPointAngle(entry.point, angle);
-	}
-	for (let index = 1; index < ordered.length; index++) {
-		const prev = ordered[index - 1]?.point;
-		const point = ordered[index]?.point;
-		if (!prev || !point) continue;
-		const prevAngle = unwrapAngleNear(prev.angle, parentAngle);
-		const angle = unwrapAngleNear(point.angle, parentAngle);
-		if (angle <= prevAngle) setPointAngle(point, prevAngle + 0.003);
-	}
-	return true;
-}
-
-function finalSiblingFanDemandSpan(ordered: { point: RadialPoint; node?: WorldNode }[]): number {
-	if (ordered.length <= 1) return 0;
-	const radius = Math.max(1, medianNumber(ordered.map((entry) => entry.point.radius), ordered[0]?.point.radius ?? 1));
-	const arcDemand =
-		ordered.reduce((sum, entry) => {
-			const labelDemand = entry.node ? labelArcPadding(entry.node) * 1.28 : 28;
-			return sum + entry.point.nodeRadius * 2.6 + labelDemand + 18;
-		}, 0) + Math.max(0, ordered.length - 1) * 16;
-	return arcDemand / radius;
-}
-
-function finalSiblingFanArcFloor(count: number, sectorSpan: number): number {
-	if (count <= 1) return 0;
-	const countFloor = 0.18 + Math.log2(count + 1) * 0.125;
-	return clamp(countFloor, 0.18, Math.min(sectorSpan * 0.55, Math.PI * 0.36));
 }
 
 function controlledSiblingMinSpan(count: number, sectorSpan: number): number {

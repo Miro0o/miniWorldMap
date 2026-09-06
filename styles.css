@@ -134,6 +134,33 @@
 	backdrop-filter: blur(14px);
 }
 
+/* Resolve host control tokens inside the panel: inherited custom properties
+   may already contain colors from the application's opposite scheme. */
+.galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) {
+	--interactive-normal: var(--mwm-field-bg);
+	--interactive-hover: var(--background-modifier-hover);
+	--interactive-accent-hover: var(--interactive-accent);
+	--background-modifier-form-field: var(--mwm-field-bg);
+	--background-modifier-border-hover: var(--mwm-field-border);
+	--background-modifier-border-focus: var(--interactive-accent);
+	--dropdown-background: var(--mwm-field-bg);
+	--dropdown-background-hover: var(--mwm-field-bg);
+	--text-faint: var(--mwm-field-placeholder);
+	--text-accent: var(--interactive-accent);
+	--text-error: #f47070;
+	--checkbox-color: var(--interactive-accent);
+	--checkbox-color-hover: var(--interactive-accent);
+	--checkbox-marker-color: var(--text-on-accent);
+	--checkbox-border-color: var(--mwm-field-border);
+	--checkbox-border-color-hover: var(--interactive-accent);
+	--input-shadow: none;
+	--input-shadow-hover: none;
+}
+
+.galaxy-panel.gx-theme-light {
+	--text-error: #b42332;
+}
+
 .galaxy-panel-header {
 	display: flex;
 	align-items: center;
@@ -557,7 +584,7 @@
 	--mwm-radial-bg: #f8fafc;
 	--mwm-radial-text: #172033;
 	--mwm-radial-label: #172033;
-	--mwm-radial-label-root: #3568d4;
+	--mwm-radial-label-root: #3b2a0c;
 	--mwm-radial-label-shadow: rgba(255, 255, 255, 0.92);
 	--mwm-legend-root-color: #3568d4;
 	--mwm-legend-folder-color: #788395;
@@ -566,9 +593,10 @@
 	--mwm-legend-external-color: #8b70c2;
 	--mwm-legend-outside-note-color: #e99a2f;
 	--mwm-legend-unresolved-color: #d66376;
-	--mwm-legend-tree-color: #aeb7c5;
-	--mwm-legend-link-color: #6a4fc2;
-	--mwm-legend-external-link-color: #e99a2f;
+	--mwm-legend-tree-color: #1e4b91;
+	--mwm-legend-link-color: #805087;
+	--mwm-legend-external-link-color: #916016;
+	--mwm-legend-unresolved-link-color: #ab485f;
 	--mwm-floating-bg: rgba(255, 255, 255, 0.82);
 	--mwm-floating-border: rgba(23, 32, 51, 0.14);
 	--mwm-floating-color: #172033;
@@ -579,7 +607,7 @@
 	--mwm-radial-bg: #10131a;
 	--mwm-radial-text: #f8fafc;
 	--mwm-radial-label: #f8fafc;
-	--mwm-radial-label-root: #82a1ff;
+	--mwm-radial-label-root: #fff4d6;
 	--mwm-radial-label-shadow: rgba(0, 0, 0, 0.92);
 	--mwm-legend-root-color: #82a1ff;
 	--mwm-legend-folder-color: #b2bac7;
@@ -588,9 +616,10 @@
 	--mwm-legend-external-color: #c2abe7;
 	--mwm-legend-outside-note-color: #ffc064;
 	--mwm-legend-unresolved-color: #f493a3;
-	--mwm-legend-tree-color: #96a0b2;
-	--mwm-legend-link-color: #aa92ec;
-	--mwm-legend-external-link-color: #ffc064;
+	--mwm-legend-tree-color: #c1d6f2;
+	--mwm-legend-link-color: #ab92ca;
+	--mwm-legend-external-link-color: #cba877;
+	--mwm-legend-unresolved-link-color: #d2a0ac;
 	--mwm-floating-bg: rgba(10, 14, 24, 0.64);
 	--mwm-floating-border: rgba(255, 255, 255, 0.12);
 	--mwm-floating-color: #e8ecf6;
@@ -669,8 +698,15 @@
 }
 
 .mwm-radial-label.is-root {
-	font-weight: 600;
-	color: var(--mwm-radial-label-root, #aab6ff);
+	z-index: 2;
+	font-weight: 700;
+	color: var(--mwm-radial-label-root, #fff4d6);
+	text-shadow:
+		-1px 0 0 var(--mwm-radial-bg, #10131a),
+		1px 0 0 var(--mwm-radial-bg, #10131a),
+		0 -1px 0 var(--mwm-radial-bg, #10131a),
+		0 1px 0 var(--mwm-radial-bg, #10131a),
+		0 1px 4px var(--mwm-radial-label-shadow, rgba(0, 0, 0, 0.92));
 }
 
 .mwm-radial-label.is-strong {
@@ -838,6 +874,29 @@
 	font-size: 11px;
 }
 
+.mwm-hover-highlights {
+	min-width: 0;
+	margin: 0;
+	padding: 8px 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+}
+
+.mwm-hover-highlights > legend {
+	padding: 0 4px;
+	font-size: 11px;
+	color: var(--text-muted);
+}
+
+.mwm-hover-scope {
+	margin-left: 20px;
+}
+
+.mwm-hover-scope .mwm-panel-field {
+	grid-template-columns: minmax(0, 1fr);
+	gap: 4px;
+}
+
 .mwm-panel-toggle {
 	grid-template-columns: auto minmax(0, 1fr);
 	justify-content: start;
@@ -873,8 +932,11 @@
 	border-radius: 6px;
 	outline: none;
 	background-color: var(--mwm-field-bg);
+	background-image: none;
 	color: var(--mwm-field-text);
 	caret-color: var(--mwm-field-text);
+	-webkit-text-fill-color: var(--mwm-field-text);
+	color-scheme: inherit;
 	box-shadow: none;
 }
 
@@ -887,6 +949,7 @@
 .galaxy-panel input::placeholder,
 .galaxy-panel textarea::placeholder {
 	color: var(--mwm-field-placeholder);
+	-webkit-text-fill-color: var(--mwm-field-placeholder);
 	opacity: 1;
 }
 
@@ -933,6 +996,12 @@
 	border-left: 2px solid currentColor;
 	transform: rotate(-45deg) scale(0);
 	transition: transform 90ms ease-out;
+}
+
+/* The host also draws an ::after checkmark; use the panel's existing one. */
+.mini-world-map-view .galaxy-panel input[type='checkbox']::after {
+	content: none;
+	display: none;
 }
 
 .mini-world-map-view .galaxy-panel:is(.gx-theme-space, .gx-theme-dark, .gx-theme-night, .gx-theme-light) input[type='checkbox']:hover {
@@ -1116,11 +1185,15 @@
 	border-radius: 0;
 	background: transparent;
 	box-shadow: none;
-	border-top: 2px solid var(--mwm-legend-color, var(--text-muted));
+	border-top: 1.8px solid var(--mwm-legend-color, var(--text-muted));
 }
 
 .mwm-legend-tree {
 	--mwm-legend-color: var(--mwm-legend-tree-color);
+}
+
+.mwm-legend-tree::before {
+	border-top-width: 2.2px;
 }
 
 .mwm-legend-link {
@@ -1132,10 +1205,11 @@
 }
 
 .mwm-legend-link-unresolved {
-	--mwm-legend-color: var(--mwm-legend-unresolved-color);
+	--mwm-legend-color: var(--mwm-legend-unresolved-link-color);
 }
 
 .mwm-legend-link-unresolved::before {
+	border-top-width: 1.6px;
 	border-top-style: dotted;
 }
 

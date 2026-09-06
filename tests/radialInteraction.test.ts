@@ -10,7 +10,7 @@ import type { VisibleWorldGraph, WorldEdge, WorldNode } from '../src/world/types
 import { addHierarchyHighlights, createHighlightIndex } from '../src/view/radialHighlights';
 
 interface EdgeVisual { key: string; edge: WorldEdge; points: { x: number; y: number }[] }
-type HeadlessRenderer = Pick<RadialRenderer, 'hitTest' | 'worldToScreen' | 'setView' | 'resize'> & {
+type HeadlessRenderer = Pick<RadialRenderer, 'hitTest' | 'worldToScreen' | 'setView' | 'resize' | 'fitToLayout' | 'getView'> & {
 	currentLabelVisibility: LabelVisibility;
 	revealDepthLimit: number;
 	zoom: number;
@@ -39,6 +39,36 @@ function renderer(graph: VisibleWorldGraph | null, layout: RadialLayout | null):
 afterEach(() => vi.unstubAllGlobals());
 
 describe('radial interaction preservation', () => {
+	it.each([1e6, 1e10])('fits a complete map of size %s and lets manual zoom go beyond its overview', (size) => {
+		const layout = { positions: new Map(), width: size, height: size, centerX: size / 2, centerY: size / 2, readableZoom: 0.02 } as RadialLayout;
+		const r = renderer(null, layout);
+		expect(r.fitToLayout()).toBe(true);
+		const overview = r.getView().zoom;
+		expect(overview).toBeLessThan(layout.readableZoom!);
+		for (const x of [0, size]) for (const y of [0, size]) {
+			const screen = r.worldToScreen(x, y);
+			expect(screen.x).toBeGreaterThanOrEqual(20); expect(screen.x).toBeLessThanOrEqual(1180);
+			expect(screen.y).toBeGreaterThanOrEqual(20); expect(screen.y).toBeLessThanOrEqual(780);
+		}
+		r.setView(size / 2, size / 2, overview / 10);
+		expect(r.getView().zoom).toBe(overview / 10);
+		r.setView(size / 2, size / 2, 0);
+		expect(r.getView().zoom).toBeGreaterThan(0);
+		expect(r.getView().zoom).toBeLessThanOrEqual(overview / 10);
+	});
+
+	it('fits asymmetric map bounds while centering the chosen root', () => {
+		const layout = { positions: new Map([['', { x: 200000, y: 650000 }]]), width: 1e6, height: 1e6, readableZoom: 0.02 } as RadialLayout;
+		const r = renderer(null, layout);
+		expect(r.fitToLayout('')).toBe(true);
+		expect(r.worldToScreen(200000, 650000)).toEqual({ x: 600, y: 400 });
+		for (const x of [0, 1e6]) for (const y of [0, 1e6]) {
+			const screen = r.worldToScreen(x, y);
+			expect(screen.x).toBeGreaterThanOrEqual(20); expect(screen.x).toBeLessThanOrEqual(1180);
+			expect(screen.y).toBeGreaterThanOrEqual(20); expect(screen.y).toBeLessThanOrEqual(780);
+		}
+	});
+
 	it('keeps hover-only labels across pan, zoom and resize', () => {
 		vi.stubGlobal('window', { devicePixelRatio: 1 });
 		const r = renderer(null, null);
@@ -48,6 +78,19 @@ describe('radial interaction preservation', () => {
 		expect(r.currentLabelVisibility).toBe('hover');
 		r.resize(900, 700);
 		expect(r.currentLabelVisibility).toBe('hover');
+	});
+
+	it('keeps the node picking margin in screen pixels below the old zoom floor', () => {
+		const model = buildWorldMap([{ path: 'Note.md', basename: 'Note', kind: 'note' }], {}, {}, DEFAULT_RADIAL_SETTINGS);
+		const graph = buildVisibleWorldGraph(model, defaultVisibleGraphState(DEFAULT_RADIAL_SETTINGS), DEFAULT_RADIAL_SETTINGS);
+		const layout = layoutRadialGraph(graph, { ringSpacing: 1160, nodeSpacing: 144, swirlStrength: 0 });
+		const note = layout.positions.get('Note.md')!;
+		note.x = 6e11; note.y = 4e11;
+		layout.width = layout.height = 1e12;
+		const r = renderer(graph, layout);
+		Object.assign(r, { centerX: note.x, centerY: note.y, zoom: 1e-9 });
+		expect(r.hitTest(609, 400, false).nodeId).toBe('Note.md');
+		expect(r.hitTest(611, 400, false).nodeId).toBeNull();
 	});
 
 	it('matches exhaustive picking at all zoom levels, including roads, ties and reveal stages', () => {
@@ -68,7 +111,7 @@ describe('radial interaction preservation', () => {
 		for (const depth of [1, Infinity]) {
 			indexed.revealDepthLimit = depth;
 			indexed.edgeVisuals = new Map([...indexed.allEdgeVisuals].filter(([, { edge }]) => layout.positions.get(edge.source)!.depth <= depth && layout.positions.get(edge.target)!.depth <= depth));
-			for (const zoom of [0.00001, 0.001, 0.01, 0.1, 1, 6]) {
+			for (const zoom of [1e-9, 0.00001, 0.001, 0.01, 0.1, 1, 6]) {
 				indexed.zoom = zoom;
 				const probes = [{ x: 0, y: 0 }, { x: 600, y: 400 }, { x: 1200, y: 800 }];
 				for (const point of [...layout.positions.values()].slice(0, 24)) {

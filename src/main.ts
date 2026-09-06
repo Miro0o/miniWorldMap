@@ -3,7 +3,7 @@ import { VIEW_TYPE_MINI_WORLD_MAP } from './constants';
 import type { Language, MiniWorldMapSettings, ViewMode } from './settings';
 import {
 	DEFAULT_RADIAL_SETTINGS,
-	HOVER_HIGHLIGHT_MODE_OPTIONS,
+	HIERARCHY_HIGHLIGHT_MODE_OPTIONS,
 	HOVER_TARGET_MODE_OPTIONS,
 	LABEL_VISIBILITY_OPTIONS,
 	MAX_ATLAS_DEPTH,
@@ -13,7 +13,10 @@ import {
 	applyVaultConfigDirDefault,
 	clampNumber,
 	mergeSettings,
-	normalizeHoverHighlightMode,
+	hoverHighlightsNoteLinks,
+	hoverHierarchyMode,
+	normalizeHierarchyHighlightMode,
+	updateHoverHighlights,
 	normalizeHoverTargetMode,
 	normalizeLabelVisibility,
 	normalizeLanguage,
@@ -97,11 +100,13 @@ export default class MiniWorldMapPlugin extends Plugin {
 	}
 
 	setLanguage(language: Language): void {
-		this.settings.language = normalizeLanguage(language);
+		const next = normalizeLanguage(language);
+		if (next === this.settings.language) return;
+		this.settings.language = next;
 		void this.saveSettings();
 		for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MINI_WORLD_MAP)) {
 			const view = leaf.view;
-			if (view instanceof MiniWorldMapView) view.switchMode(this.settings.viewMode);
+			if (view instanceof MiniWorldMapView) view.setLanguage(next);
 		}
 	}
 
@@ -138,9 +143,8 @@ class MiniWorldMapSettingTab extends PluginSettingTab {
 					this.renderSetting(t(language, 'language'), t(language, 'settings.languageDesc'), (setting) => {
 						setting.addDropdown((dropdown) => {
 							for (const [value, label] of languageOptions(language)) dropdown.addOption(value, label);
-							dropdown.setValue(this.plugin.settings.language).onChange(async (value) => {
-								this.plugin.settings.language = normalizeLanguage(value);
-								await this.plugin.saveSettings();
+							dropdown.setValue(this.plugin.settings.language).onChange((value) => {
+								this.plugin.setLanguage(normalizeLanguage(value));
 								this.update();
 							});
 						});
@@ -202,11 +206,25 @@ class MiniWorldMapSettingTab extends PluginSettingTab {
 							}),
 						);
 					}),
-					this.renderSetting(t(language, 'control.hover'), t(language, 'settings.hoverDesc'), (setting) => {
+					this.renderSetting(`${t(language, 'control.hover')}: ${t(language, 'hover.note-links')}`, t(language, 'settings.hoverNoteLinksDesc'), (setting) => {
+						setting.addToggle((toggle) => toggle.setValue(hoverHighlightsNoteLinks(radial.hoverHighlightMode)).onChange(async (value) => {
+							updateHoverHighlights(radial, { noteLinks: value });
+							await this.plugin.saveSettings();
+						}));
+					}),
+					this.renderSetting(`${t(language, 'control.hover')}: ${t(language, 'hover.hierarchy-links')}`, t(language, 'settings.hoverHierarchyLinksDesc'), (setting) => {
+						setting.addToggle((toggle) => toggle.setValue(hoverHierarchyMode(radial.hoverHighlightMode) !== null).onChange(async (value) => {
+							updateHoverHighlights(radial, { hierarchyLinks: value });
+							await this.plugin.saveSettings();
+							this.update();
+						}));
+					}),
+					this.renderSetting(t(language, 'control.hoverHierarchyScope'), t(language, 'settings.hoverHierarchyScopeDesc'), (setting) => {
 						setting.addDropdown((dropdown) => {
-							for (const [value, label] of hoverModeOptions(language, HOVER_HIGHLIGHT_MODE_OPTIONS)) dropdown.addOption(value, label);
-							dropdown.setValue(radial.hoverHighlightMode).onChange(async (value) => {
-								radial.hoverHighlightMode = normalizeHoverHighlightMode(value);
+							const hierarchy = hoverHierarchyMode(radial.hoverHighlightMode);
+							for (const [value, label] of hoverModeOptions(language, HIERARCHY_HIGHLIGHT_MODE_OPTIONS)) dropdown.addOption(value, label);
+							dropdown.setValue(hierarchy ?? radial.hoverHierarchyScope).setDisabled(hierarchy === null).onChange(async (value) => {
+								updateHoverHighlights(radial, { hierarchyScope: normalizeHierarchyHighlightMode(value) });
 								await this.plugin.saveSettings();
 							});
 						});

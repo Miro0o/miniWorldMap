@@ -20,7 +20,15 @@ export class VisibleGraphCache {
 			this.model = model;
 			this.settingsKey = settingsKey;
 		}
-		const key = JSON.stringify(state);
+		// Labels never change the graph. Selection only materializes exact outside
+		// endpoints in selected-detail mode; otherwise it must not evict the layout.
+		const selectionMatters = state.showExternalLinks && state.externalDetailMode === 'selected';
+		const key = JSON.stringify({
+			...state,
+			labelVisibility: undefined,
+			selectedNodeId: selectionMatters ? state.selectedNodeId : null,
+			selectedLink: selectionMatters && state.selectedLink ? [state.selectedLink.source, state.selectedLink.target] : null,
+		});
 		const graph = this.entries.get(key) ?? buildVisibleWorldGraph(model, state, settings);
 		this.entries.delete(key);
 		this.entries.set(key, graph);

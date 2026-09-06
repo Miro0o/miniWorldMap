@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { App, WorkspaceLeaf } from 'obsidian';
 import { Events, TFile, TFolder } from './helpers/obsidian';
-import { mergeSettings } from '../src/settings';
+import { MAX_ATLAS_DEPTH, MAX_LINK_LIMIT, MAX_RENDER_NODE_LIMIT, mergeSettings } from '../src/settings';
+import type { VisibleGraphState } from '../src/world/types';
 
 vi.mock('obsidian', () => import('./helpers/obsidian'));
 vi.mock('../src/layout/WorkerForceLayout', () => ({ WorkerForceLayout: class { dispose() {} } }));
@@ -10,6 +11,7 @@ import { GraphStore } from '../src/data/GraphStore';
 import { GraphController } from '../src/view/GraphController';
 import { MiniWorldMapView } from '../src/view/GalaxyView';
 import { Radial2DController } from '../src/view/Radial2DController';
+import { RadialRenderer } from '../src/render/RadialRenderer';
 import { WorldMapIndex } from '../src/world/WorldMapIndex';
 import { buildWorldMap } from '../src/world/buildWorldMap';
 import { vaultEntries } from '../src/world/vaultSnapshot';
@@ -34,6 +36,43 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('map lifecycle', () => {
+	it.each([0.002, 0.2])('preserves the chosen zoom scale when search switches to a differently sized root at zoom %s', async (zoom) => {
+		const setView = vi.fn();
+		const next = { x: 50, y: 70, siblingSpacing: 200 };
+		const controller = Object.assign(Object.create(Radial2DController.prototype), {
+			state: {}, graph: { rootId: 'Old' },
+			layout: { positions: new Map([['Old', { siblingSpacing: 2000 }]]) },
+			renderer: { getView: () => ({ zoom }), nodePoint: () => next, setView },
+			leaveCompleteMap() {}, clearMapSelection() {},
+			async queueRebuild() { controller.layout = { positions: new Map([['New', next]]), readableZoom: 0.05 }; },
+		}) as { layout: unknown; state: { rootPath: string }; openSearchNodeAsRoot(id: string): Promise<void> };
+		await controller.openSearchNodeAsRoot('New');
+		expect(controller.state.rootPath).toBe('New');
+		expect(setView).toHaveBeenCalledWith(50, 70, zoom * 10);
+	});
+
+	it('uses the layout zoom limit for wheel events and preserves the point beneath the cursor', () => {
+		const listeners = new Map<string, (event: WheelEvent) => void>();
+		const view = { centerX: 5e9, centerY: 5e9, zoom: 1e-5 };
+		const r = Object.assign(Object.create(RadialRenderer.prototype), {
+			width: 1200, height: 800, layout: { width: 1e10, height: 1e10 },
+			domElement: { addEventListener: (name: string, handler: (event: WheelEvent) => void) => listeners.set(name, handler),
+				getBoundingClientRect: () => ({ left: 20, top: 30, width: 1200, height: 800 }) },
+			getView: () => view,
+			screenToWorld: (x: number, y: number) => ({ x: view.centerX + (x - 600) / view.zoom, y: view.centerY - (y - 400) / view.zoom }),
+			setView: (centerX: number, centerY: number, zoom: number) => Object.assign(view, { centerX, centerY, zoom }),
+		});
+		const controller = Object.assign(Object.create(Radial2DController.prototype), { renderer: r, register() {} }) as { bindRendererEvents(): void };
+		controller.bindRendererEvents();
+		const before = r.screenToWorld(900, 200) as { x: number; y: number };
+		for (const deltaY of [120, 12000]) {
+			listeners.get('wheel')!({ clientX: 920, clientY: 230, deltaY, preventDefault() {} } as WheelEvent);
+			expect(view.zoom).toBeGreaterThan(0); expect(view.zoom).toBeLessThan(1e-5);
+			expect((before.x - view.centerX) * view.zoom + 600).toBeCloseTo(900, 6);
+			expect((view.centerY - before.y) * view.zoom + 400).toBeCloseTo(200, 6);
+		}
+	});
+
 	it('starts 3D without a resolved event, then accepts later metadata normally', async () => {
 		const { app, metadataCache, vault } = fixture();
 		metadataCache.resolvedLinks = {} as typeof metadataCache.resolvedLinks;
@@ -139,6 +178,26 @@ describe('map lifecycle', () => {
 });
 
 describe('vault index invalidation', () => {
+	it.each([null, '', 'deleted.md'])('shows Vault details even with the root hidden and selection %s', async (selectedNodeId) => {
+		const { app, settings } = fixture();
+		settings.radial.hiddenLegendItems = ['root'];
+		const controller = new Radial2DController(app, { empty() {}, removeClass() {} } as unknown as HTMLElement, settings, () => {}, () => {}, () => {});
+		controller.load();
+		const internals = controller as unknown as {
+			queueRebuild(reason: string): Promise<void>; renderInspectPage(parent: HTMLElement): void;
+			selectedNodeId: string | null; graph: { nodesById: Map<string, unknown> };
+		};
+		await internals.queueRebuild('legend');
+		expect(internals.graph.nodesById.has('')).toBe(false);
+		internals.selectedNodeId = selectedNodeId;
+		const facts: string[] = [];
+		const parent = { createDiv: ({ cls }: { cls: string }) => cls === 'mwm-facts' ? { createSpan: ({ text }: { text: string }) => facts.push(text) } : parent };
+		Object.assign(controller, { button() {}, renderNeighborList() {} });
+		internals.renderInspectPage(parent as unknown as HTMLElement);
+		expect(facts).toEqual(['Type', 'Root', 'Hierarchy level', '0', 'Subtree nodes (total)', '3', 'Subtree nodes (rendered)', '2', 'Markdown notes', '1', 'Outgoing references', '0', 'Incoming references', '0']);
+		controller.dispose();
+	});
+
 	it('reuses the model and file snapshot for content edits without link changes', async () => {
 		const { app, settings, vault } = fixture();
 		const index = new WorldMapIndex(app, settings.radial);
@@ -161,25 +220,26 @@ describe('vault index invalidation', () => {
 		settings.radial.includeUnresolvedLinks = true;
 		app.metadataCache.resolvedLinks = { 'A/one.md': { 'two.md': 1, 'three.md': 2 } };
 		const index = new WorldMapIndex(app, settings.radial);
-		const verify = async () => {
+		const verify = async (expectedNodes: number) => {
 			await index.ensureReady();
 			expect(index.model).toEqual(buildWorldMap([...vaultEntries(app.vault)], app.metadataCache.resolvedLinks, app.metadataCache.unresolvedLinks, settings.radial, 'test'));
+			expect(index.subtreeNodeCount('')).toBe(expectedNodes);
 		};
-		await verify();
+		await verify(5);
 		app.metadataCache.resolvedLinks['A/one.md']!['two.md'] = 5;
 		app.metadataCache.unresolvedLinks['A/one.md'] = { missing: 2 };
 		index.invalidate('links');
-		await verify();
+		await verify(6);
 		delete app.metadataCache.resolvedLinks['A/one.md']!['two.md'];
 		app.metadataCache.resolvedLinks['A/one.md']!['two.md'] = 5;
 		index.invalidate('links');
-		await verify();
+		await verify(6);
 		settings.radial.ignoreFolders.push('A');
-		await verify();
+		await verify(3);
 		settings.radial.ignoreFolders = [];
 		root.children.pop();
 		index.invalidate();
-		await verify();
+		await verify(5);
 		index.dispose();
 	});
 
@@ -243,6 +303,63 @@ describe('vault index invalidation', () => {
 		await vi.advanceTimersByTimeAsync(700);
 		expect(internals.graph.nodesById.has('new.md')).toBe(true);
 		expect(internals.layout).not.toBe(originalLayout);
+		controller.dispose();
+	});
+
+	it('reuses layout after changing hover, labels and a selection that does not affect outside detail', async () => {
+		const { app, settings } = fixture();
+		const controller = new Radial2DController(app, { empty() {}, removeClass() {} } as unknown as HTMLElement, settings, () => {}, () => {}, () => {});
+		controller.load();
+		const internals = controller as unknown as { queueRebuild(reason: string): Promise<void>; layout: RadialLayout; selectedNodeId: string | null };
+		await internals.queueRebuild('legend');
+		const original = internals.layout;
+		internals.selectedNodeId = 'A/one.md';
+		settings.radial.labelVisibility = 'hover';
+		for (const hover of ['all-links', 'none', 'hierarchy-parents', 'note-links', 'note-links+hierarchy-parents', 'note-links+hierarchy-direct-children', 'note-links+hierarchy-descendants', 'note-links+hierarchy-parents-direct'] as const) {
+			settings.radial.hoverHighlightMode = hover;
+			await internals.queueRebuild('hover');
+			expect(internals.layout).toBe(original);
+		}
+		controller.dispose();
+	});
+
+	it('expands the current root temporarily, restores defaults on exit and keeps default-limit edits out of the current view', async () => {
+		const { app, settings, root, metadataCache } = fixture();
+		root.children.push(new TFolder('B', [new TFile('B/outside.md')]));
+		Object.assign(metadataCache.resolvedLinks['A/one.md']!, { 'B/outside.md': 2 });
+		Object.assign(metadataCache.unresolvedLinks, { 'A/one.md': { missing: 1 } });
+		Object.assign(settings.radial, { includeUnresolvedLinks: false, showExternalLinks: false, linkLimit: 1, atlasDepth: 2, hiddenLegendItems: ['link', 'missing'] });
+		const saved = structuredClone(settings.radial);
+		const controller = new Radial2DController(app, { empty() {}, removeClass() {} } as unknown as HTMLElement, settings, () => {}, () => {}, () => {});
+		controller.load();
+		const internals = controller as unknown as {
+			state: VisibleGraphState; index: WorldMapIndex; graph: { rootId: string; externalFileCount: number; linkEdges: unknown[] };
+			queueRebuild(reason: string): Promise<void>; showCompleteMap(): void; resetToAtlas(): void; renderDefaultsPage(parent: HTMLElement): void;
+		};
+		vi.spyOn(controller, 'rebuild').mockImplementation(() => {});
+		internals.state.rootPath = 'A';
+		await internals.queueRebuild('legend');
+		internals.showCompleteMap();
+		await internals.queueRebuild('legend');
+		expect(internals.graph).toMatchObject({ rootId: 'A', externalFileCount: 1 });
+		expect(internals.graph.linkEdges).toHaveLength(2);
+		expect(internals.state).toMatchObject({ showCompleteRoot: true, atlasDepth: MAX_ATLAS_DEPTH, nodeLimit: MAX_RENDER_NODE_LIMIT, linkLimit: MAX_LINK_LIMIT, hiddenLegendItems: [] });
+		expect(internals.index.stats.unresolved).toBe(1);
+		expect(settings.radial).toEqual(saved);
+		internals.resetToAtlas();
+		await internals.queueRebuild('legend');
+		expect(internals.state).toMatchObject({ showCompleteRoot: false, rootPath: 'A', atlasDepth: 2, linkLimit: 1, showExternalLinks: false, hiddenLegendItems: ['link', 'missing'] });
+		expect(internals.index.stats.unresolved).toBe(0);
+		const before = structuredClone(internals.state);
+		const callbacks: ((value: number) => void)[] = [];
+		Object.assign(controller, {
+			numberInput: (_parent: HTMLElement, _label: string, _value: number, _min: number, _max: number, _step: number, change: (value: number) => void) => callbacks.push(change),
+			toggle() {}, textArea() {},
+		});
+		internals.renderDefaultsPage({} as HTMLElement);
+		callbacks[0]!(3); callbacks[1]!(900); callbacks[2]!(0);
+		expect(settings.radial).toMatchObject({ atlasDepth: 3, renderNodeLimit: 900, linkLimit: 0 });
+		expect(internals.state).toEqual(before);
 		controller.dispose();
 	});
 

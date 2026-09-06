@@ -39,6 +39,7 @@ export class GraphController {
 	private director: CameraDirector | null = null;
 	private overlay: OverlayManager | null = null;
 	private panel: ControlPanel | null = null;
+	private languageButton: HTMLButtonElement | null = null;
 
 	private rafId = 0;
 	private disposed = false;
@@ -80,6 +81,15 @@ export class GraphController {
 
 	get counts(): { nodes: number; links: number } {
 		return { nodes: this.store.data.nodes.length, links: this.store.data.links.length };
+	}
+
+	setLanguage(language: Language): void {
+		if (this.disposed) return;
+		this.language = language;
+		this.panel?.setLanguage(language, this.panelInspectNode(this.selected));
+		this.languageButton?.setAttr('title', this.tt('language'));
+		this.languageButton?.setAttr('aria-label', this.tt('language'));
+		this.renderHud();
 	}
 
 	async start(): Promise<void> {
@@ -661,6 +671,7 @@ export class GraphController {
 			cls: 'mwm-floating-button',
 			attr: { type: 'button', title: this.tt('language'), 'aria-label': this.tt('language') },
 		});
+		this.languageButton = button;
 		setIcon(button, 'languages');
 		button.addEventListener('click', (event) => {
 			event.preventDefault();
@@ -678,9 +689,8 @@ export class GraphController {
 				if (value === this.language) item.setIcon('check');
 				item.onClick(() => {
 					if (value === this.language) return;
-					this.language = value;
-					this.panel?.setLanguage(value);
-					this.onLanguage?.(value);
+					if (this.onLanguage) this.onLanguage(value);
+					else this.setLanguage(value);
 				});
 			});
 		}
@@ -691,8 +701,12 @@ export class GraphController {
 	private updateHud(now: number): void {
 		this.hudFrames.push(now);
 		while (this.hudFrames.length > 0 && now - (this.hudFrames[0] ?? 0) > 1000) this.hudFrames.shift();
+		if (now % 500 <= 250) this.renderHud();
+	}
+
+	private renderHud(): void {
 		const el = this.panel?.statsEl;
-		if (!el || now % 500 > 250) return;
+		if (!el) return;
 		const c = this.counts;
 		el.setText(
 			this.tt('stats.3d', {
@@ -846,5 +860,6 @@ export class GraphController {
 		this.renderer = null;
 		this.panel?.dispose();
 		this.panel = null;
+		this.languageButton = null;
 	}
 }

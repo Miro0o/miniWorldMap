@@ -15,6 +15,19 @@ function fixture() {
 }
 
 describe('visible graph caching', () => {
+	it('reuses graphs after label and irrelevant selection changes but retains selected outside detail', () => {
+		const { model, settings, state } = fixture();
+		const cache = new VisibleGraphCache();
+		const original = cache.get(model, state, settings);
+		expect(cache.get(model, { ...state, labelVisibility: 'hover', selectedNodeId: 'A/one.md' }, settings)).toBe(original);
+		const selected = { ...state, rootPath: 'A', externalDetailMode: 'selected' as const };
+		const grouped = cache.get(model, selected, settings);
+		const expanded = cache.get(model, { ...selected, selectedNodeId: 'A/one.md' }, settings);
+		expect(expanded).not.toBe(grouped);
+		expect(expanded.externalFileCount).toBe(1);
+		expect(grouped.externalFileCount).toBe(0);
+	});
+
 	it('keeps the neutral layout graph while cycling legend visibility', () => {
 		const { model, settings, state } = fixture();
 		const cache = new VisibleGraphCache();

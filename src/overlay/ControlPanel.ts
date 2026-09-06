@@ -89,6 +89,7 @@ export class ControlPanel {
 	}
 
 	private render(): void {
+		this.statsEl.setAttr('title', this.tt('stats.3d.desc'));
 		this.body.empty();
 		this.sliders = [];
 		this.styleChips = [];
@@ -151,6 +152,7 @@ export class ControlPanel {
 			facts.createSpan({ text: label });
 			facts.createSpan({ text: value });
 		}
+		parent.createDiv({ cls: 'mwm-side-muted', text: this.tt('3d.inspect.counts') });
 		const actions = parent.createDiv({ cls: 'galaxy-panel-row' });
 		if (node.canOpen) {
 			const openBtn = actions.createEl('button', { text: this.tt('context.openNote') });
@@ -391,9 +393,12 @@ export class ControlPanel {
 		this.qualityBtn?.setText(this.qualityLabel());
 	}
 
-	setLanguage(language: Language): void {
+	setLanguage(language: Language, inspectNode: PanelInspectNode | null = this.inspectNode): void {
 		this.language = language;
+		this.inspectNode = inspectNode;
+		const scrollTop = this.body.scrollTop;
 		this.render();
+		this.body.scrollTop = scrollTop;
 	}
 
 	setInspectNode(node: PanelInspectNode | null, activate = false): void {

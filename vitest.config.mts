@@ -3,6 +3,9 @@ import { build } from 'esbuild';
 import path from 'node:path';
 
 export default defineConfig({
+	// Layout suites are CPU-heavy. Bound file concurrency so independent large
+	// maps do not exhaust the host's cores and trigger unrelated test timeouts.
+	test: { maxWorkers: 2, minWorkers: 1 },
 	plugins: [{
 		name: 'inline-worker-tests',
 		resolveId(id, importer) {

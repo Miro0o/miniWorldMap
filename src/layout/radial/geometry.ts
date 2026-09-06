@@ -1,4 +1,4 @@
-import type { WorldEdge, WorldNode } from '../../world/types';
+import { ROOT_ID, type WorldEdge, type WorldNode } from '../../world/types';
 import type { RadialPoint, RadialRoute, RadialRing, RadialLayout } from './types';
 
 export function smoothstep(edge0: number, edge1: number, value: number): number {
@@ -135,7 +135,7 @@ export function makePoint(radius: number, angle: number, depth: number, nodeRadi
 }
 
 export function setPointSector(point: RadialPoint, start: number, end: number): void {
-	const span = clamp(Math.max(0, end - start), 0.024, Math.PI * 2);
+	const span = clamp(Math.max(0, end - start), 1e-9, Math.PI * 2);
 	const center = start + span / 2;
 	point.sectorStart = center - span / 2;
 	point.sectorEnd = center + span / 2;
@@ -144,7 +144,8 @@ export function setPointSector(point: RadialPoint, start: number, end: number): 
 
 export function nodeRadius(node: WorldNode | undefined, maxDegree: number, incidentPressure = 0): number {
 	if (!node) return 3.6;
-	const storedDegree = Math.max(0, (node.linkCount || 0) + (node.backlinkCount || 0));
+	// Vault totals describe the whole index, not the synthetic root's own degree.
+	const storedDegree = node.id === ROOT_ID ? 0 : Math.max(0, (node.linkCount || 0) + (node.backlinkCount || 0));
 	const pressureDegree = Math.max(0, incidentPressure * 0.62);
 	const degree = Math.max(storedDegree, pressureDegree);
 	const degreeScale = Math.max(1, maxDegree || 1, degree);
@@ -155,7 +156,7 @@ export function nodeRadius(node: WorldNode | undefined, maxDegree: number, incid
 	const degreeBoost = degreeCurve * 22 + hubCurve * 30 + Math.log2(degree + 1) * 2.15 + Math.sqrt(degree) * 0.42;
 	if (node.externalProxy) return node.type === 'unresolved' ? Math.min(17, 4.5 + degreeBoost * 0.42) : Math.min(30, 4.8 + degreeBoost * 0.58);
 	if (node.type === 'folder') {
-		const noteSignal = Math.log2((node.noteCount || node.descendantCount || 1) + 1);
+		const noteSignal = node.id === ROOT_ID ? 1 : Math.log2((node.noteCount || node.descendantCount || 1) + 1);
 		const contextBoost = Math.min(5.8, noteSignal * 0.54);
 		return Math.min(64, 5.8 + contextBoost + degreeBoost * 0.94);
 	}
@@ -170,7 +171,9 @@ export function nodeRadius(node: WorldNode | undefined, maxDegree: number, incid
 
 export function maxLinkDegree(nodes: WorldNode[]): number {
 	let max = 1;
-	for (const node of nodes) max = Math.max(max, (node.linkCount || 0) + (node.backlinkCount || 0));
+	for (const node of nodes) {
+		if (node.id !== ROOT_ID) max = Math.max(max, (node.linkCount || 0) + (node.backlinkCount || 0));
+	}
 	return max;
 }
 
@@ -239,7 +242,7 @@ export function setPointAngle(point: RadialPoint, angle: number): void {
 	point.y = Math.sin(normalized) * point.radius;
 	point.angle = normalized;
 	if (Number.isFinite(point.sectorSpan) && (point.sectorSpan ?? 0) > 0) {
-		const span = clamp(point.sectorSpan!, 0.024, Math.PI * 2);
+		const span = clamp(point.sectorSpan!, 1e-9, Math.PI * 2);
 		setPointSector(point, normalized - span / 2, normalized + span / 2);
 	}
 }

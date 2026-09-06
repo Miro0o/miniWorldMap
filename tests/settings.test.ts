@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { applyVaultConfigDirDefault, hoverHighlightsNoteLinks, mergeSettings } from '../src/settings';
+import { applyVaultConfigDirDefault, clampNumber, combineHoverHighlights, HIERARCHY_HIGHLIGHT_MODE_OPTIONS, hoverHierarchyMode, hoverHighlightsNoteLinks, mergeSettings, updateHoverHighlights } from '../src/settings';
 
 describe('Mini World Map settings migration', () => {
+	it('accepts zero from number fields and rejects non-finite saved values', () => {
+		expect(clampNumber('0', 0, 30_000, 1200)).toBe(0);
+		expect(clampNumber('0', 0, 100, 30)).toBe(0);
+		for (const value of [Infinity, -Infinity, NaN, 'Infinity', '', 'invalid']) {
+			expect(clampNumber(value, 0, 100, 30)).toBe(30);
+		}
+		expect(mergeSettings({ radial: { linkLimit: '0', externalLinkAnchorLimit: '0' }, galaxy3d: { bloom: { strength: Infinity } } }))
+			.toMatchObject({ radial: { linkLimit: 0, externalLinkAnchorLimit: 0 }, galaxy3d: { bloom: { strength: 0.35 } } });
+	});
+
 	it('defaults to 2D radial mode and preserves legacy radial keys', () => {
 		const settings = mergeSettings({
 			atlasDepth: 9,
@@ -37,6 +47,22 @@ describe('Mini World Map settings migration', () => {
 		expect(mergeSettings({ radial: { hoverHighlightMode: 'all-links' } }).radial.hoverHighlightMode).toBe('all-links');
 		expect(hoverHighlightsNoteLinks('all-links')).toBe(true);
 		expect(hoverHighlightsNoteLinks('hierarchy-all')).toBe(false);
+	});
+
+	it.each(HIERARCHY_HIGHLIGHT_MODE_OPTIONS)('preserves both link-type choices and the %s hierarchy scope through save/reload', (scope) => {
+		for (const noteLinks of [false, true]) {
+			const mode = combineHoverHighlights(noteLinks, scope);
+			const settings = mergeSettings({ radial: { hoverHighlightMode: mode } });
+			expect(settings.radial.hoverHierarchyScope).toBe(scope);
+			expect(hoverHighlightsNoteLinks(settings.radial.hoverHighlightMode)).toBe(noteLinks);
+			expect(hoverHierarchyMode(settings.radial.hoverHighlightMode)).toBe(scope);
+			updateHoverHighlights(settings.radial, { hierarchyLinks: false });
+			const restored = mergeSettings(JSON.parse(JSON.stringify(settings)));
+			expect(restored.radial.hoverHighlightMode).toBe(noteLinks ? 'note-links' : 'none');
+			expect(restored.radial.hoverHierarchyScope).toBe(scope);
+			expect(updateHoverHighlights(restored.radial, { hierarchyLinks: true })).toBe(mode);
+			expect(updateHoverHighlights(restored.radial, { noteLinks: !noteLinks })).toBe(combineHoverHighlights(!noteLinks, scope));
+		}
 	});
 
 	it('adds the current vault config folder to default ignored folders', () => {

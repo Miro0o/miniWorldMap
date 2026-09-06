@@ -1,8 +1,9 @@
 import { ItemView, Notice, WorkspaceLeaf } from 'obsidian';
 import { VIEW_TYPE_MINI_WORLD_MAP } from '../constants';
-import type { SettingsHost, ViewMode } from '../settings';
+import type { Language, SettingsHost, ViewMode } from '../settings';
 import { Map3DController } from './Map3DController';
 import { Radial2DController } from './Radial2DController';
+import { RadialLayoutCache } from '../world/RadialLayoutCache';
 
 type ActiveController = Radial2DController | Map3DController;
 
@@ -13,6 +14,7 @@ export class MiniWorldMapView extends ItemView {
 	private initRetryCount = 0;
 	private bootStatusEl: HTMLElement | null = null;
 	private bootStatusTimer = 0;
+	private radialLayoutCache = new RadialLayoutCache();
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -61,6 +63,10 @@ export class MiniWorldMapView extends ItemView {
 		this.rebuild();
 	}
 
+	setLanguage(language: Language): void {
+		this.controller?.setLanguage(language);
+	}
+
 	private tryInit(): void {
 		if (this.controller) return;
 		const { clientWidth: width, clientHeight: height } = this.contentEl;
@@ -94,6 +100,7 @@ export class MiniWorldMapView extends ItemView {
 				() => void this.host.saveSettings(),
 				(mode) => this.switchMode(mode),
 				(language) => this.host.setLanguage(language),
+				this.radialLayoutCache,
 			);
 			this.controller = controller;
 			this.addChild(controller);
@@ -150,6 +157,7 @@ export class MiniWorldMapView extends ItemView {
 		this.clearInitRetry();
 		this.clearBootStatus();
 		this.disposeController();
+		this.radialLayoutCache.clear();
 		this.contentEl.empty();
 	}
 

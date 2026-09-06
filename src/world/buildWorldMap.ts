@@ -234,7 +234,7 @@ function computeFolderCounts(nodes: Map<string, WorldNode>): void {
 	const sorted = [...nodes.values()].sort((a, b) => b.depth - a.depth);
 	for (const node of sorted) {
 		node.descendantCount = node.type === 'note' ? 1 : node.noteCount;
-		if (!node.parentId || !nodes.has(node.parentId)) continue;
+		if (node.parentId === null) continue;
 		const parent = nodes.get(node.parentId);
 		if (!parent) continue;
 		const subtreeNotes = node.type === 'note' ? 1 : node.noteCount;

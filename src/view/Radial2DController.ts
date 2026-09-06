@@ -1,7 +1,7 @@
 import { Component, Menu, Notice, TFile, debounce, setIcon, type App, type Debouncer } from 'obsidian';
 import type { Language, MiniWorldMapSettings, RadialSettings, ViewMode } from '../settings';
 import {
-	HOVER_HIGHLIGHT_MODE_OPTIONS,
+	HIERARCHY_HIGHLIGHT_MODE_OPTIONS,
 	HOVER_TARGET_MODE_OPTIONS,
 	LABEL_VISIBILITY_OPTIONS,
 	LEGEND_ITEM_DEFINITIONS,
@@ -12,16 +12,19 @@ import {
 	MAX_SWIRL_STRENGTH,
 	clampNumber,
 	hoverHighlightsNoteLinks,
+	hoverHierarchyMode,
 	normalizeColorScheme,
 	normalizeExternalDetailMode,
 	normalizeHoverHighlightMode,
 	normalizeHoverTargetMode,
 	normalizeLabelVisibility,
 	normalizeLanguage,
+	updateHoverHighlights,
 } from '../settings';
 import {
 	colorSchemeOptions,
 	hoverModeOptions,
+	hoverModeLabel,
 	hoverTargetOptions,
 	labelVisibilityOptions,
 	languageOptions,
@@ -34,10 +37,13 @@ import {
 	DEFAULT_RING_SPACING,
 	type RadialLayout,
 } from '../layout/radial/layoutRadial';
-import { MAX_RADIAL_ZOOM, MIN_RADIAL_ZOOM, RadialRenderer, emptyActiveState, radialFallbackBackground, radialNodeColorKind, type RadialActiveState, type RadialResolvedScheme } from '../render/RadialRenderer';
+import { RadialRenderer, emptyActiveState, radialFallbackBackground, radialNodeColorKind, type RadialActiveState, type RadialResolvedScheme } from '../render/RadialRenderer';
 import { resolveObsidianBackground } from '../render/obsidianTheme';
 import { ROOT_ID, type VisibleGraphState, type VisibleWorldGraph, type WorldEdge, type WorldNode } from '../world/types';
 import { WorldMapIndex } from '../world/WorldMapIndex';
+import { renderedNodeCounts } from '../world/worldMapStats';
+import { WorldMapComputation } from '../world/WorldMapComputation';
+import type { RadialLayoutCache } from '../world/RadialLayoutCache';
 import { defaultVisibleGraphState } from '../world/visibleGraph';
 import { NodeSearchModal } from './SearchModal';
 import { radialNodeLegendLabelKey } from './radialNodeLegend';
@@ -87,6 +93,7 @@ export class Radial2DController extends Component {
 	private panel: HTMLElement | null = null;
 	private panelBody: HTMLElement | null = null;
 	private statsEl: HTMLElement | null = null;
+	private languageButton: HTMLButtonElement | null = null;
 	private activePanelPage: 'inspect' | 'pins' | 'view' | 'controls' | 'defaults' = 'view';
 	private selectedNodeId: string | null = null;
 	private selectedLink: WorldEdge | null = null;
@@ -117,9 +124,10 @@ export class Radial2DController extends Component {
 		saveSettings: () => void,
 		private onViewMode: (mode: ViewMode) => void,
 		private onLanguage: (language: Language) => void,
+		layoutCache?: RadialLayoutCache,
 	) {
 		super();
-		this.index = new WorldMapIndex(app, settings.radial);
+		this.index = new WorldMapIndex(app, settings.radial, new WorldMapComputation(layoutCache));
 		this.state = defaultVisibleGraphState(settings.radial);
 		this.saveSoon = debounce(saveSettings, 500, true);
 		this.redrawSoon = debounce(() => this.rebuild('metadata'), 600, true);
@@ -129,12 +137,21 @@ export class Radial2DController extends Component {
 		return { nodes: this.graph?.nodes.length ?? 0, links: this.graph?.linkEdges.length ?? 0 };
 	}
 
+	setLanguage(language: Language): void {
+		if (this.disposed) return;
+		this.settings.language = language;
+		const scrollTop = this.panelBody?.scrollTop ?? 0;
+		this.renderPanel();
+		if (this.panelBody) this.panelBody.scrollTop = scrollTop;
+		this.languageButton?.setAttr('title', this.t('language'));
+		this.languageButton?.setAttr('aria-label', this.t('language'));
+	}
+
 	async start(): Promise<void> {
 		this.contentEl.addClass('mwm-radial-mode');
 		this.canvasHost = this.contentEl.createDiv({ cls: 'mwm-radial-host' });
 		this.renderer = new RadialRenderer(this.canvasHost);
 		this.renderer.setLinkPickingEnabled(this.hoverTargets().links);
-		this.syncThemeClass();
 		this.buildPanel();
 		this.buildFloatingControls();
 		this.bindRendererEvents();
@@ -239,7 +256,6 @@ export class Radial2DController extends Component {
 		let revealRootId: string | null = null;
 		renderer?.beginRenderBatch();
 		try {
-			renderer?.setTheme(this.resolvedCanvasScheme());
 			renderer?.setData(graph, this.layout, radial.labelVisibility, radial.showRingGuides);
 			this.resizeRenderer(!preserveView);
 			if (preserveView) {
@@ -273,6 +289,9 @@ export class Radial2DController extends Component {
 			...this.state,
 			hiddenLegendItems: [],
 			showLinkOverlay: true,
+			// Hover preferences do not affect an unfiltered graph's layout.
+			hoverHighlightMode: 'none',
+			pinNeedsHoverLinks: false,
 		};
 	}
 
@@ -327,7 +346,7 @@ export class Radial2DController extends Component {
 			const before = renderer.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
 			const view = renderer.getView();
 			const factor = Math.pow(1.45, -event.deltaY / 120);
-			const zoom = Math.min(Math.max(view.zoom * factor, MIN_RADIAL_ZOOM), MAX_RADIAL_ZOOM);
+			const zoom = renderer.clampZoom(view.zoom * factor);
 			const afterCenterX = before.x - (event.clientX - rect.left - rect.width / 2) / zoom;
 			const afterCenterY = before.y + (event.clientY - rect.top - rect.height / 2) / zoom;
 			renderer.setView(afterCenterX, afterCenterY, zoom);
@@ -459,7 +478,7 @@ export class Radial2DController extends Component {
 		state.activeNodeId = activeNode;
 		state.activeLinkId = activeLink?.id ?? null;
 		const addNode = (nodeId: string | null | undefined, mode: string, pinned: boolean) => {
-			if (!nodeId || !this.graph?.nodesById.has(nodeId)) return;
+			if (nodeId === null || nodeId === undefined || !this.graph?.nodesById.has(nodeId)) return;
 			state.relatedNodes.add(nodeId);
 			state.labelNodes.add(nodeId);
 			if (pinned) state.pinnedNodeIds.add(nodeId);
@@ -493,8 +512,8 @@ export class Radial2DController extends Component {
 			if (pin.kind === 'node') addNode(pin.nodeId, pin.mode, true);
 			else addLink(this.findGraphEdgeForPin(pin), true);
 		}
-		state.hasActive = Boolean(activeNode || activeLink || this.pinnedPaths.some((pin) => isPinnedRouteVisible(pin, this.pinGroups)));
-		state.dimOthers = Boolean(activeNode || activeLink);
+		state.hasActive = activeNode !== null || Boolean(activeLink) || this.pinnedPaths.some((pin) => isPinnedRouteVisible(pin, this.pinGroups));
+		state.dimOthers = activeNode !== null || Boolean(activeLink);
 		return state;
 	}
 
@@ -531,6 +550,7 @@ export class Radial2DController extends Component {
 		this.panelBody.empty();
 		if (this.statsEl) {
 			this.statsEl.setText(this.t('stats.counts', { nodes: graph?.nodes.length ?? 0, links: graph?.linkEdges.length ?? 0 }));
+			this.statsEl.setAttr('title', this.t('stats.counts.desc', { ...renderedNodeCounts(graph), hierarchy: graph?.hierarchyEdges.length ?? 0, links: graph?.linkEdges.length ?? 0 }));
 		}
 		const modeSwitch = this.panelBody.createDiv({ cls: 'mwm-mode-switch' });
 		modeSwitch.createDiv({ cls: 'mwm-mode-switch-label', text: this.t('view.mode') });
@@ -577,17 +597,27 @@ export class Radial2DController extends Component {
 			this.renderLinkInspect(parent, this.selectedLink);
 			return;
 		}
-		const node = this.graph.nodesById.get(this.selectedNodeId ?? this.graph.focusId ?? this.graph.rootId);
+		const inspectId = this.selectedNodeId ?? this.graph.focusId ?? this.graph.rootId;
+		const node = this.graph.nodesById.get(inspectId) ?? this.index.nodes.get(inspectId)
+			?? this.graph.nodesById.get(this.graph.rootId) ?? this.index.nodes.get(this.graph.rootId);
 		parent.createDiv({ cls: 'mwm-side-title', text: node?.title ?? 'Mini World Map' });
 		if (!node) return;
 		parent.createDiv({ cls: 'mwm-side-path', text: node.path || '/' });
-		const facts = parent.createDiv({ cls: 'mwm-facts' });
+		const countsDescription = this.t(node.type === 'external' ? 'inspect.counts.external' : node.type === 'folder' ? 'inspect.counts.folder' : 'inspect.counts.node');
+		const facts = parent.createDiv({
+			cls: 'mwm-facts',
+			attr: { title: node.type === 'external' ? countsDescription : `${countsDescription}\n\n${this.t('inspect.counts.desc')}` },
+		});
 		for (const [label, value] of [
 			[this.t('inspect.type'), this.detailKindLabel(node)],
 			[this.t('inspect.depth'), String(node.depth)],
-			[this.t('inspect.notes'), String(node.noteCount || node.descendantCount || 0)],
-			[this.t('inspect.out'), String(node.linkCount || 0)],
-			[this.t('inspect.in'), String(node.backlinkCount || 0)],
+			...(node.type === 'folder' && !node.externalProxy ? [
+				[this.t('inspect.subtreeNodes'), String(this.index.subtreeNodeCount(node.id))],
+				[this.t('inspect.renderedSubtreeNodes'), String(renderedNodeCounts(this.graph, node.id).inside)],
+			] : []),
+			[this.t('inspect.notes'), String(node.noteCount)],
+			[this.t('inspect.outReferences'), String(node.linkCount)],
+			[this.t('inspect.inReferences'), String(node.backlinkCount)],
 		]) {
 			facts.createSpan({ text: label });
 			facts.createSpan({ text: value });
@@ -632,7 +662,7 @@ export class Radial2DController extends Component {
 			[this.t('inspect.backlinks', { count: incoming.length }), incoming, 'source'],
 		] as const) {
 			const section = parent.createDiv({ cls: 'mwm-neighbor-section' });
-			section.createDiv({ cls: 'mwm-side-heading', text: title });
+			section.createDiv({ cls: 'mwm-side-heading', text: title, attr: { title: this.t('inspect.neighbors.desc') } });
 			if (edges.length === 0) section.createDiv({ cls: 'mwm-side-muted', text: this.t('common.none') });
 			const list = section.createDiv({ cls: 'mwm-neighbor-list' });
 			for (const edge of edges) {
@@ -834,6 +864,7 @@ export class Radial2DController extends Component {
 
 	private async openSearchNodeAsRoot(visualId: string): Promise<void> {
 		const currentZoom = this.renderer?.getView().zoom ?? null;
+		const previousSpacing = this.layout?.positions.get(this.graph?.rootId ?? ROOT_ID)?.siblingSpacing;
 		this.leaveCompleteMap();
 		this.clearMapSelection();
 		this.state.mode = 'atlas';
@@ -843,7 +874,12 @@ export class Radial2DController extends Component {
 		this.needsFit = false;
 		await this.queueRebuild('root');
 		const point = this.renderer?.nodePoint(visualId);
-		if (point && currentZoom !== null) this.renderer?.setView(point.x, point.y, currentZoom);
+		if (point && currentZoom !== null) {
+			// A new root has its own capacity scale. Preserve the visual spacing
+			// instead of reusing a zoom tied to the previous graph's world units.
+			const ratio = previousSpacing && point.siblingSpacing ? previousSpacing / point.siblingSpacing : 1;
+			this.renderer?.setView(point.x, point.y, currentZoom * ratio);
+		}
 	}
 
 	private centerCurrentView(): void {
@@ -915,6 +951,28 @@ export class Radial2DController extends Component {
 		return this.t(radialNodeLegendLabelKey(radialNodeColorKind(node, rootId)));
 	}
 
+	private renderHoverControls(parent: HTMLElement): void {
+		const radial = this.radial();
+		const hierarchy = hoverHierarchyMode(this.state.hoverHighlightMode);
+		const group = parent.createEl('fieldset', { cls: 'mwm-hover-highlights' });
+		group.createEl('legend', { text: this.t('control.hover'), attr: { title: this.t('settings.hoverDesc') } });
+		const update = (change: Parameters<typeof updateHoverHighlights>[1]) => {
+			this.state.hoverHighlightMode = updateHoverHighlights(radial, change);
+			this.state.pinNeedsHoverLinks = this.pinnedPathsNeedHoverLinks();
+			this.saveSoon();
+			this.renderPanel();
+			this.rebuild('hover');
+		};
+		this.toggle(group, this.t('hover.note-links'), hoverHighlightsNoteLinks(this.state.hoverHighlightMode),
+			(value) => update({ noteLinks: value }), this.t('settings.hoverNoteLinksDesc'));
+		this.toggle(group, this.t('hover.hierarchy-links'), hierarchy !== null,
+			(value) => update({ hierarchyLinks: value }), this.t('settings.hoverHierarchyLinksDesc'));
+		const scope = group.createDiv({ cls: 'mwm-hover-scope' });
+		this.select(scope, this.t('control.hoverHierarchyScope'), hierarchy ?? radial.hoverHierarchyScope,
+			hoverModeOptions(this.settings.language, HIERARCHY_HIGHLIGHT_MODE_OPTIONS),
+			(value) => update({ hierarchyScope: value }), this.t('settings.hoverHierarchyScopeDesc'), hierarchy === null);
+	}
+
 	private renderControlsPage(parent: HTMLElement): void {
 		const radial = this.radial();
 		this.numberInput(parent, this.t('control.depth'), this.state.atlasDepth, 1, MAX_ATLAS_DEPTH, 1, (value) => {
@@ -942,14 +1000,7 @@ export class Radial2DController extends Component {
 			this.saveSoon();
 			this.rebuild('link-overlay');
 		}, this.t('settings.showLinksDesc'));
-		this.select(parent, this.t('control.hover'), this.state.hoverHighlightMode, hoverModeOptions(this.settings.language, HOVER_HIGHLIGHT_MODE_OPTIONS), (value) => {
-			const mode = normalizeHoverHighlightMode(value);
-			this.state.hoverHighlightMode = mode;
-			radial.hoverHighlightMode = mode;
-			this.state.pinNeedsHoverLinks = this.pinnedPathsNeedHoverLinks();
-			this.saveSoon();
-			this.rebuild('hover');
-		}, this.t('settings.hoverDesc'));
+		this.renderHoverControls(parent);
 		this.select(parent, this.t('control.hoverTargets'), radial.hoverTargetMode, hoverTargetOptions(this.settings.language, HOVER_TARGET_MODE_OPTIONS), (value) => {
 			radial.hoverTargetMode = normalizeHoverTargetMode(value);
 			this.renderer?.setLinkPickingEnabled(this.hoverTargets().links);
@@ -1013,17 +1064,14 @@ export class Radial2DController extends Component {
 		const radial = this.radial();
 		this.numberInput(parent, this.t('control.defaultDepth'), radial.atlasDepth, 1, MAX_ATLAS_DEPTH, 1, (value) => {
 			radial.atlasDepth = value;
-			this.state.atlasDepth = value;
 			this.saveSoon();
 		}, this.t('settings.depthDesc'));
 		this.numberInput(parent, this.t('control.defaultNodes'), radial.renderNodeLimit, 200, MAX_RENDER_NODE_LIMIT, 100, (value) => {
 			radial.renderNodeLimit = value;
-			this.state.nodeLimit = value;
 			this.saveSoon();
 		}, this.t('settings.nodeLimitDesc'));
 		this.numberInput(parent, this.t('control.defaultNoteLinks'), radial.linkLimit, 0, MAX_LINK_LIMIT, 50, (value) => {
 			radial.linkLimit = value;
-			this.state.linkLimit = value;
 			this.saveSoon();
 		}, this.t('settings.linkLimitDesc'));
 		this.toggle(parent, this.t('control.unresolvedLinks'), radial.includeUnresolvedLinks, (value) => {
@@ -1088,6 +1136,7 @@ export class Radial2DController extends Component {
 			cls: 'mwm-floating-button',
 			attr: { type: 'button', title: this.t('language'), 'aria-label': this.t('language') },
 		});
+		this.languageButton = languageButton;
 		setIcon(languageButton, 'languages');
 		languageButton.addEventListener('click', (event) => {
 			event.preventDefault();
@@ -1105,9 +1154,7 @@ export class Radial2DController extends Component {
 				item.onClick(() => {
 					const language = normalizeLanguage(value);
 					if (language === this.settings.language) return;
-					this.settings.language = language;
 					this.onLanguage(language);
-					this.renderPanel();
 				});
 			});
 		}
@@ -1126,7 +1173,11 @@ export class Radial2DController extends Component {
 		const field = parent.createEl('label', { cls: 'mwm-panel-field', attr: { title } });
 		field.createSpan({ text: label });
 		const input = field.createEl('input', { attr: { value: String(value), type: 'number', min: String(min), max: String(max), step: String(step) } });
-		input.addEventListener('change', () => onChange(clampNumber(input.value, min, max, value)));
+		input.addEventListener('change', () => {
+			value = clampNumber(input.value, min, max, value);
+			input.value = String(value);
+			onChange(value);
+		});
 	}
 
 	private textArea(parent: HTMLElement, label: string, value: string, onChange: (value: string) => void, title = label): void {
@@ -1145,12 +1196,13 @@ export class Radial2DController extends Component {
 		input.addEventListener('change', () => onChange(input.checked));
 	}
 
-	private select<T extends string>(parent: HTMLElement, label: string, value: T, options: [T, string][], onChange: (value: T) => void, title = label): void {
+	private select<T extends string>(parent: HTMLElement, label: string, value: T, options: [T, string][], onChange: (value: T) => void, title = label, disabled = false): void {
 		const field = parent.createEl('label', { cls: 'mwm-panel-field', attr: { title } });
 		field.createSpan({ text: label });
 		const select = field.createEl('select');
 		for (const [id, text] of options) select.createEl('option', { attr: { value: id }, text });
 		select.value = value;
+		select.disabled = disabled;
 		select.addEventListener('change', () => onChange(select.value as T));
 	}
 
@@ -1337,7 +1389,7 @@ export class Radial2DController extends Component {
 	}
 
 	private pinKindLabel(pin: PinPath): string {
-		return pin.kind === 'link' ? this.t('inspect.linkOverlay') : this.t(`hover.${normalizeHoverHighlightMode(pin.mode)}`);
+		return pin.kind === 'link' ? this.t('inspect.linkOverlay') : hoverModeLabel(this.settings.language, pin.mode);
 	}
 
 	private pinDisplayTitle(pin: PinPath): string {
@@ -1496,6 +1548,7 @@ export class Radial2DController extends Component {
 		this.highlightIndex = null;
 		this.layout = null;
 		this.layoutGraph = null;
+		this.languageButton = null;
 		this.index.dispose();
 		this.contentEl.removeClass('mwm-radial-mode');
 		this.contentEl.empty();

@@ -29,7 +29,7 @@ The goal is to complement Obsidian's native Graph View and conventional mind-map
 - **3D Galaxy view:** fly through a Three.js graph with force layout, bloom, twinkle, orbit cruise, reveal animation, and search-to-fly navigation.
 - **Search:** open Mini World Map search from either mode and jump to notes, folders, unresolved links, or graph nodes.
 - **Re-rooting:** double-click a folder in 2D to use it as the current atlas root.
-- **Semantic route highlighting:** hover a 2D node to highlight parents, children, or every connection at once; hierarchy, note, cross-root, and unresolved routes keep distinct colors while unrelated routes fade.
+- **Semantic route highlighting:** independently enable note links and hierarchy links when hovering a 2D node. Hierarchy scope can include parents, direct children, all descendants, or their combinations; each route type keeps its own color while unrelated routes fade.
 - **Note-link highlighting:** hover nodes or link roads to inspect Obsidian internal links alongside the hierarchy.
 - **Link overlays:** draw aggregated internal links between visible 2D nodes.
 - **Cross-root links:** show links that leave the current 2D root as grouped outside branches, selected outside files, or exact outside files.
@@ -107,8 +107,9 @@ Useful scripts:
 - `npm run build` validates TypeScript, writes release assets to `dist/`, and refreshes the checked-in `main.js` bundle.
 - `npm test` runs the Vitest suite.
 - `npm run lint` runs ESLint.
+- `node scripts/benchmark-radial.mjs HEAD` compares the current 2D computation with a commit using actual workers and identical synthetic maps. It reports cold loads, rebuilds, and switching back to 2D; vault I/O, WebGL rendering, and reveal animation are outside this benchmark.
 
-The checked-in `main.js` is the generated bundle. The previous legacy bundle is preserved at `legacy/main.legacy.js`.
+The checked-in `main.js` is the generated bundle used for repository installs. Obsolete bundles under `legacy/` and local test/profiling output are ignored by Git.
 
 ## Manual Installation
 

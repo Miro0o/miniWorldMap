@@ -1,4 +1,4 @@
-import type { HoverHighlightMode } from '../settings';
+import { hoverHierarchyMode, type HoverHighlightMode } from '../settings';
 import type { RadialActiveState } from '../render/RadialRenderer';
 import type { VisibleWorldGraph, WorldEdge } from '../world/types';
 import { indexIncidentEdges } from '../world/edgeIndex';
@@ -30,7 +30,8 @@ export function addHierarchyHighlights(
 	mode: HoverHighlightMode,
 	state: RadialActiveState,
 ): void {
-	if (mode === 'none' || mode === 'note-links') return;
+	const hierarchy = hoverHierarchyMode(mode);
+	if (!hierarchy) return;
 	const { parentByChild, childrenByParent } = index;
 	const addEdge = (edge: WorldEdge) => {
 		state.highlightedEdges.add(edge.id);
@@ -39,17 +40,17 @@ export function addHierarchyHighlights(
 		state.labelNodes.add(edge.source);
 		state.labelNodes.add(edge.target);
 	};
-	if (mode === 'hierarchy-parents' || mode === 'hierarchy-parents-direct' || mode === 'hierarchy-all' || mode === 'all-links') {
+	if (hierarchy === 'hierarchy-parents' || hierarchy === 'hierarchy-parents-direct' || hierarchy === 'hierarchy-all') {
 		let edge = parentByChild.get(nodeId);
 		while (edge) {
 			addEdge(edge);
 			edge = parentByChild.get(edge.source);
 		}
 	}
-	if (mode === 'hierarchy-direct-children' || mode === 'hierarchy-parents-direct' || mode === 'hierarchy-all' || mode === 'all-links') {
+	if (hierarchy === 'hierarchy-direct-children' || hierarchy === 'hierarchy-parents-direct' || hierarchy === 'hierarchy-all') {
 		for (const edge of childrenByParent.get(nodeId) ?? []) addEdge(edge);
 	}
-	if (mode === 'hierarchy-descendants' || mode === 'hierarchy-all' || mode === 'all-links') {
+	if (hierarchy === 'hierarchy-descendants' || hierarchy === 'hierarchy-all') {
 		const stack = [...(childrenByParent.get(nodeId) ?? [])];
 		while (stack.length > 0) {
 			const edge = stack.pop();
@@ -59,4 +60,3 @@ export function addHierarchyHighlights(
 		}
 	}
 }
-

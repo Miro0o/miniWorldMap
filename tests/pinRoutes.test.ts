@@ -28,6 +28,9 @@ describe('pinned route identity', () => {
 		const allLinks = pinRouteKey({ kind: 'node', nodeId: 'Atlas/Topic.md', mode: 'all-links' });
 		const parents = pinRouteKey({ kind: 'node', nodeId: 'Atlas/Topic.md', mode: 'hierarchy-parents' });
 		expect(allLinks).not.toBe(parents);
+		const combined = pinRouteKey({ kind: 'node', nodeId: 'Atlas/Topic.md', mode: 'note-links+hierarchy-parents' });
+		expect(combined).not.toBe(parents);
+		expect(combined).not.toBe(allLinks);
 	});
 
 	it('uses the graph edge identity for a pinned note-link route', () => {
